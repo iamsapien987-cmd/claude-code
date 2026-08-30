@@ -16,7 +16,7 @@ import { CANDLE_HEIGHT_0, LUMINOUS_INTENSITY } from './constants.js';
 
 // ---------------------------------------------------------------- simulation
 const GRID_NX = 40;
-const GRID_NY = 100;
+const GRID_NY = 130;
 const DOMAIN_W = 0.024;                 // m across the simulated air volume
 const SUBSTEP = 1 / 480;                // s, fixed physics step
 const MAX_SUBSTEPS = 10;                // guard against spiral-of-death

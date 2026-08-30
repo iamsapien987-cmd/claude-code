@@ -57,7 +57,7 @@ export const T_SOOT_IGNITION = 1000;   // K, soot inception, where particles for
  * Using the inception temperature as the emission cutoff cropped that whole
  * envelope away and left only a thin bright core.
  */
-export const T_SOOT_GLOW_FLOOR = 950;
+export const T_SOOT_GLOW_FLOOR = 820;
 export const FLAME_DIAMETER = 0.010;   // m, luminous zone width
 export const FLAME_HEIGHT = 0.040;     // m, typical steady flame height
 export const FLICKER_HZ = 1.5 / Math.sqrt(FLAME_DIAMETER); // ~15 Hz

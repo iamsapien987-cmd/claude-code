@@ -1,6 +1,6 @@
 /** Horizontal slices through the flame, to see what is actually narrow. */
 import { FlameField } from '../src/fluid.js';
-const f = new FlameField(40, 100, 0.024 / 40);
+const f = new FlameField(40, 130, 0.024 / 40);
 const dt = 1 / 480;
 for (let n = 0; n < 480 * 6; n++) { f.injectFuel(0.6, dt); f.step(dt); }
 const rows = [3, 8, 16, 26, 38];

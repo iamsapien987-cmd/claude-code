@@ -112,7 +112,10 @@ export class WaxBody {
   updateThermal(t, intensity, lit) {
     const power = lit ? HEAT_RELEASE * intensity * MELT_FEEDBACK_FRACTION : 0;
     // Characteristic radius over which the flame heats the face.
-    const rq = 0.0045 + 0.0075 * intensity;
+    // Characteristic radius over which the flame heats the face. It has to
+    // stay well inside the candle's own radius, or the whole top melts at
+    // once and there is never a solid rim to form a crater against.
+    const rq = 0.0022 + 0.0042 * intensity;
     let liquidNodes = 0;
 
     for (let i = 0; i < PROFILE_N; i++) {
@@ -213,11 +216,15 @@ export class WaxBody {
   /** A blob of molten wax goes over the rim. */
   spawnDrip(side) {
     if (this.drips.length > 14) return;
+    const top = this.height - this.profile[side < 0 ? 0 : PROFILE_N - 1];
     this.drips.push({
-      side,                                   // -1 left wall, +1 right wall
-      // Where around the visible face it runs, 0 = silhouette edge, 1 = centre.
-      across: Math.random() * 0.55,
-      y: this.height - this.profile[side < 0 ? 0 : PROFILE_N - 1],
+      // Azimuth around the candle, in radians from the face nearest the
+      // viewer. The renderer projects this onto the cylinder, so a drip is
+      // placed on the surface rather than floated over it. Biased towards the
+      // silhouette, which is where the rim gives way first.
+      theta: side * (0.55 + 0.45 * Math.random()) * (Math.PI / 2),
+      y: top,
+      startY: top,                            // where it went over the rim
       vy: 0,
       T: T_WAX_POOL,
       mass: 2e-5 + Math.random() * 6e-5,      // kg, roughly 20-80 mg

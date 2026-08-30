@@ -25,6 +25,9 @@ import { PROFILE_N } from './wax.js';
 
 const ROOM_RGB = blackbodyRGB(T_COLOR_ROOM).map((c) => Math.round(255 * encodeSrgb(c)));
 
+/** Diffuse reflectance of unlit paraffin: a warm off-white, not a neutral one. */
+const WAX_ALBEDO = [0.96, 0.91, 0.80];
+
 /** Vertical squash of the top-face ellipse: we look slightly down on the candle. */
 const TILT = 0.19;
 /** Beer-Lambert attenuation length of light inside paraffin, metres. */
@@ -253,12 +256,11 @@ export class Renderer {
     // comes from a 1850 K flame. Shading it with neutral greys made it read
     // as grey plastic; multiplying the wax's own albedo by the colour of the
     // light actually illuminating it is what makes it read as wax.
-    const albedo = [0.96, 0.91, 0.80];
     for (let i = 0; i <= 10; i++) {
       const s = i / 10;
       const v = shade(s * 2 - 1) * lum;
-      const c = [0, 1, 2].map((ch) =>
-        Math.round(255 * Math.min(1, v * albedo[ch] * (0.45 + 0.55 * ROOM_RGB[ch] / 255))));
+      const c = WAX_ALBEDO.map((a, ch) =>
+        Math.round(255 * Math.min(1, v * a * (0.45 + 0.55 * ROOM_RGB[ch] / 255))));
       g.addColorStop(s, `rgb(${c[0]}, ${c[1]}, ${c[2]})`);
     }
     ctx.fillStyle = g;
@@ -309,28 +311,49 @@ export class Renderer {
   drawDrips(ctx, rPx, lum) {
     const all = this.wax.frozen.concat(this.wax.drips);
     for (const d of all) {
-      const rad = Math.max(1.5, d.radius * this.scale);
-      const x = this.cx + d.side * rPx * (1 - d.across * 0.55) - d.side * rad * 0.4;
+      // Project the drip's azimuth onto the cylinder. A drip sits *on* the
+      // surface, so its screen position is R sin(theta), and the surface
+      // turns away from the viewer as |theta| grows.
+      const st = Math.sin(d.theta);
+      const ct = Math.abs(Math.cos(d.theta));
+      const x = this.cx + rPx * st;
+      const rad = Math.max(1.2, d.radius * this.scale);
+      // Seen from the side, a drip near the silhouette is viewed edge-on and
+      // so looks narrower than one facing the viewer.
+      const wide = rad * Math.max(0.35, ct);
+
       const y = this.py(d.y);
-      const top = this.py(d.startY ?? d.y);
+      const top = this.py(d.startY);
 
-      // The trail the drip has left behind it, slightly proud of the wall.
-      ctx.beginPath();
-      ctx.moveTo(x, Math.min(top, y));
-      ctx.lineTo(x, y);
-      ctx.lineWidth = rad * 1.5;
-      ctx.lineCap = 'round';
-      ctx.strokeStyle = `rgba(${Math.round(226 * lum)}, ${Math.round(206 * lum)}, ${Math.round(172 * lum)}, 0.9)`;
-      ctx.stroke();
+      // Same Lambert term the body uses, so a drip on the turned-away part of
+      // the cylinder is shaded like the wax it is sitting on instead of
+      // glowing white against it.
+      const shade = lum * (0.14 + 0.62 * Math.pow(ct, 0.85));
+      const wax = (r, g, b, a = 1) =>
+        `rgba(${Math.round(r * shade)}, ${Math.round(g * shade)}, ${Math.round(b * shade)}, ${a})`;
 
-      // The bead at the leading edge, with a specular highlight.
-      const g = ctx.createRadialGradient(x - rad * 0.35, y - rad * 0.4, 0, x, y, rad * 1.5);
-      g.addColorStop(0, `rgba(255, 245, 225, ${0.95 * lum})`);
-      g.addColorStop(0.5, `rgba(${Math.round(232 * lum)}, ${Math.round(210 * lum)}, ${Math.round(176 * lum)}, 1)`);
-      g.addColorStop(1, `rgba(${Math.round(150 * lum)}, ${Math.round(128 * lum)}, ${Math.round(100 * lum)}, 0.6)`);
+      // The trail it has left behind, standing slightly proud of the wall.
+      if (top < y - 0.5) {
+        ctx.beginPath();
+        ctx.moveTo(x, top);
+        ctx.lineTo(x, y);
+        ctx.lineWidth = wide * 1.35;
+        ctx.lineCap = 'round';
+        ctx.strokeStyle = wax(228, 208, 174, 0.92);
+        ctx.stroke();
+      }
+
+      // The bead at the leading edge. A running drip is drawn out into a
+      // teardrop by its own motion; one that has set is round again.
+      const speed = Math.min(1, Math.abs(d.vy) / 0.02);
+      const tall = wide * (1.25 + speed * 1.6);
+      const g = ctx.createRadialGradient(x - wide * 0.3, y - tall * 0.35, 0, x, y, tall * 1.3);
+      g.addColorStop(0, wax(255, 247, 230, 0.98));
+      g.addColorStop(0.5, wax(233, 212, 178));
+      g.addColorStop(1, wax(146, 126, 98, 0.7));
       ctx.fillStyle = g;
       ctx.beginPath();
-      ctx.ellipse(x, y, rad * 1.15, rad * 1.5, 0, 0, Math.PI * 2);
+      ctx.ellipse(x, y, wide * 1.1, tall, 0, 0, Math.PI * 2);
       ctx.fill();
     }
   }
@@ -342,56 +365,81 @@ export class Renderer {
     const rPx = CANDLE_RADIUS * this.scale;
     const lum = this.luminance();
 
-    // Top face, drawn from the radial height profile so the crater and its
-    // standing rim are the shape the melt model actually produced.
+    // The top face is a crater: a standing rim of wax that never got hot
+    // enough to melt, and inside it a pool that has sunk as the wick burned
+    // its way down. Both are ellipses because we are looking slightly down on
+    // the candle, and the gap between them is the crater wall.
+    const rimY = this.py(wax.nodeHeight(0));
+    const poolY = this.py(wax.centreHeight());
+    const poolR = Math.max(rPx * 0.18, wax.poolRadius * this.scale);
+
+    // Rim: the solid ring of wax, lit from directly above by the flame.
+    const rimShade = (t) => 0.16 + 0.70 * Math.pow(Math.sqrt(Math.max(0, 1 - t * t)), 0.8);
+    const rg = ctx.createLinearGradient(this.cx - rPx, 0, this.cx + rPx, 0);
+    for (let i = 0; i <= 8; i++) {
+      const s = i / 8;
+      const v = rimShade(s * 2 - 1) * lum;
+      // Same rule as the body: the wax's own albedo times the colour of the
+      // light falling on it. Neutral greys here read as a metal ring.
+      const c = WAX_ALBEDO.map((a, ch) =>
+        Math.round(255 * Math.min(1, v * a * (0.45 + 0.55 * ROOM_RGB[ch] / 255))));
+      rg.addColorStop(s, `rgb(${c[0]}, ${c[1]}, ${c[2]})`);
+    }
+    ctx.fillStyle = rg;
+    ctx.beginPath();
+    ctx.ellipse(this.cx, rimY, rPx, rPx * TILT, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Crater wall, from the rim down to the pool. The far side of the wall
+    // faces the viewer and catches the flame; the near side is in shadow
+    // behind the rim, so it is drawn darker.
+    const depth = Math.max(0, poolY - rimY);
+    if (depth > 0.5) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.ellipse(this.cx, rimY, poolR, poolR * TILT, 0, 0, Math.PI * 2);
+      ctx.ellipse(this.cx, poolY, poolR, poolR * TILT, 0, 0, Math.PI * 2);
+      ctx.rect(this.cx - poolR, rimY, poolR * 2, depth);
+      ctx.clip();
+      const wg = ctx.createLinearGradient(0, rimY - poolR * TILT, 0, poolY + poolR * TILT);
+      // The wall is lit by the flame sitting directly above it, so it runs
+      // from shadowed just under the overhanging rim to warm at the pool.
+      wg.addColorStop(0, `rgba(${Math.round(96 * lum)}, ${Math.round(72 * lum)}, ${Math.round(48 * lum)}, 1)`);
+      wg.addColorStop(0.5, `rgba(${Math.round(206 * lum)}, ${Math.round(168 * lum)}, ${Math.round(120 * lum)}, 1)`);
+      wg.addColorStop(1, `rgba(${Math.round(246 * lum)}, ${Math.round(206 * lum)}, ${Math.round(150 * lum)}, 1)`);
+      ctx.fillStyle = wg;
+      ctx.fillRect(this.cx - poolR - 1, rimY - poolR, poolR * 2 + 2, depth + poolR * 2);
+      ctx.restore();
+    }
+
+    // The pool itself. Liquid wax is specular where the solid face is matt,
+    // so it carries a sharp reflection of the flame sitting right above it.
     ctx.save();
     ctx.beginPath();
-    for (let i = 0; i < PROFILE_N; i++) {
-      const x = this.px(wax.nodeRadius(i));
-      const y = this.py(wax.nodeHeight(i)) + rPx * TILT * Math.cos(
-        Math.asin(Math.max(-1, Math.min(1, wax.nodeRadius(i) / CANDLE_RADIUS)))
-      ) * 0;
-      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-    }
-    // Close around the near lip of the top ellipse.
-    const rightY = this.py(wax.nodeHeight(PROFILE_N - 1));
-    const leftY = this.py(wax.nodeHeight(0));
-    ctx.ellipse(this.cx, (leftY + rightY) / 2, rPx, rPx * TILT, 0, 0, Math.PI, false);
-    ctx.closePath();
+    ctx.ellipse(this.cx, poolY, poolR, poolR * TILT, 0, 0, Math.PI * 2);
     ctx.clip();
-
-    const faceY = this.py(wax.centreHeight());
-    const fg = ctx.createRadialGradient(this.cx, faceY, 0, this.cx, faceY, rPx * 1.2);
-    fg.addColorStop(0, `rgba(${Math.round(255 * lum)}, ${Math.round(214 * lum)}, ${Math.round(160 * lum)}, 1)`);
-    fg.addColorStop(0.55, `rgba(${Math.round(214 * lum)}, ${Math.round(184 * lum)}, ${Math.round(140 * lum)}, 1)`);
-    fg.addColorStop(1, `rgba(${Math.round(120 * lum)}, ${Math.round(100 * lum)}, ${Math.round(78 * lum)}, 1)`);
-    ctx.fillStyle = fg;
-    ctx.fillRect(this.cx - rPx - 2, faceY - rPx, rPx * 2 + 4, rPx * 3);
-
-    // Liquid wax is specular where the solid face is not: the pool picks up a
-    // sharp reflection of the flame sitting right above it.
-    const pr = Math.max(0, wax.poolRadius) * this.scale;
-    if (pr > 1) {
-      const pg = ctx.createRadialGradient(this.cx, faceY, 0, this.cx, faceY, pr);
-      pg.addColorStop(0, `rgba(255, 236, 200, ${0.85 * lum})`);
-      pg.addColorStop(0.4, `rgba(255, 190, 120, ${0.35 * lum})`);
-      pg.addColorStop(1, 'rgba(255, 170, 90, 0)');
-      ctx.globalCompositeOperation = 'lighter';
-      ctx.fillStyle = pg;
-      ctx.save();
-      ctx.translate(this.cx, faceY);
-      ctx.scale(1, TILT * 1.5);
-      ctx.beginPath();
-      ctx.arc(0, 0, pr, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
-      ctx.globalCompositeOperation = 'source-over';
-    }
+    ctx.fillStyle = `rgba(${Math.round(216 * lum)}, ${Math.round(178 * lum)}, ${Math.round(130 * lum)}, 1)`;
+    ctx.fillRect(this.cx - poolR, poolY - poolR, poolR * 2, poolR * 2);
+    const pg = ctx.createRadialGradient(this.cx, poolY, 0, this.cx, poolY, poolR);
+    pg.addColorStop(0, `rgba(255, 236, 200, ${(0.62 * lum).toFixed(3)})`);
+    pg.addColorStop(0.45, `rgba(255, 190, 120, ${(0.26 * lum).toFixed(3)})`);
+    pg.addColorStop(1, 'rgba(255, 170, 90, 0)');
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = pg;
+    ctx.fillRect(this.cx - poolR, poolY - poolR, poolR * 2, poolR * 2);
     ctx.restore();
+
+    // A thin shadow just inside the rim, which is what actually reads as
+    // depth rather than as a flat disc with a lighter disc painted on it.
+    ctx.beginPath();
+    ctx.ellipse(this.cx, rimY, poolR, poolR * TILT, 0, Math.PI, Math.PI * 2);
+    ctx.lineWidth = Math.max(1, rPx * 0.05);
+    ctx.strokeStyle = `rgba(${Math.round(64 * lum)}, ${Math.round(46 * lum)}, ${Math.round(30 * lum)}, 0.5)`;
+    ctx.stroke();
 
     // The wick: charred and bent over towards the oxygen-rich outer edge of
     // the flame, which is how a candle trims itself.
-    const wy = this.py(wax.centreHeight());
+    const wy = poolY;
     const tipY = this.py(wax.wickTop);
     const bend = (wax.wickCarbon * 0.55 + 0.15) * (wax.wickTop - wax.centreHeight()) * this.scale;
     ctx.beginPath();
@@ -405,12 +453,12 @@ export class Renderer {
     // The base of the wick glows: it sits inside the reaction zone.
     if (state.lit) {
       ctx.globalCompositeOperation = 'lighter';
-      const eg = ctx.createRadialGradient(this.cx, wy, 0, this.cx, wy, rPx * 0.6);
-      eg.addColorStop(0, `rgba(255, 150, 60, ${0.75 * lum})`);
+      const eg = ctx.createRadialGradient(this.cx, wy, 0, this.cx, wy, rPx * 0.7);
+      eg.addColorStop(0, `rgba(255, 150, 60, ${0.8 * lum})`);
       eg.addColorStop(1, 'rgba(255, 120, 40, 0)');
       ctx.fillStyle = eg;
       ctx.beginPath();
-      ctx.arc(this.cx, wy, rPx * 0.6, 0, Math.PI * 2);
+      ctx.arc(this.cx, wy, rPx * 0.7, 0, Math.PI * 2);
       ctx.fill();
       ctx.globalCompositeOperation = 'source-over';
     }

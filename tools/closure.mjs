@@ -13,7 +13,7 @@ for (const wick of [2.5, 4, 6]) {
     const out = [];
     let width = 0;
     for (const I of [0.3, 0.6, 1.0]) {
-      const f = new FlameField(40, 100, 0.024 / 40);
+      const f = new FlameField(40, 130, 0.024 / 40);
       f.wickCells = wick; f.dZ = dZ;
       const dt = 1 / 480;
       for (let n = 0; n < 480 * 5; n++) { f.injectFuel(I, dt); f.step(dt); }

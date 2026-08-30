@@ -14,7 +14,7 @@ const secs = Number(process.argv[3] ?? 6);
 const out = process.argv[4] ?? 'shots/flame.ppm';
 const UP = 6;
 
-const f = new FlameField(40, 100, 0.024 / 40);
+const f = new FlameField(40, 130, 0.024 / 40);
 for (const arg of process.argv.slice(5)) {
   const [k, v] = arg.split('=');
   if (v !== undefined) f[k] = Number(v);
