@@ -3313,17 +3313,27 @@ btn.focus.addEventListener('click', () => {
   if (state.mode === 'focus') { endFocus('Session ended'); return; }
   state.mode = 'focus';
   state.focusLeft = FOCUS_MS;
-  state.focusPaused = false;
   press(btn.focus, true);
   timerBar.classList.add('on');
+  setFocusPaused(false);
   timerNote.textContent = 'Pauses if you leave';
   light();
   showToast('25 minutes.');
 });
 
+/**
+ * The single place the paused state changes, so the note can never disagree
+ * with it.
+ */
+function setFocusPaused(paused) {
+  if (state.focusPaused === paused) return;
+  state.focusPaused = paused;
+  timerNote.textContent = paused ? 'Paused \u00b7 resumes when you return' : 'Pauses if you leave';
+}
+
 function endFocus(msg) {
   state.mode = null;
-  state.focusPaused = false;
+  setFocusPaused(false);
   press(btn.focus, false);
   timerBar.classList.remove('on');
   if (msg) showToast(msg);
@@ -3342,12 +3352,7 @@ function endFocus(msg) {
  */
 document.addEventListener('visibilitychange', () => {
   if (state.mode !== 'focus') return;
-  if (document.hidden) {
-    state.focusPaused = true;
-  } else {
-    state.focusPaused = false;
-    timerNote.textContent = 'Pauses if you leave';
-  }
+  setFocusPaused(document.hidden);
 });
 
 // Reading light: a wide, steady, warm pool rather than a dancing flame.
@@ -3437,7 +3442,8 @@ let fpsAcc = 0, fpsN = 0, quality = 1;
 
 function frame(now) {
   requestAnimationFrame(frame);
-  let dt = (now - last) / 1000;
+  const gap = (now - last) / 1000;
+  let dt = gap;
   last = now;
   // The first callback can carry a timestamp from before the synchronous
   // start-up priming ran, which makes dt negative. Clamp both ends: a
@@ -3445,6 +3451,24 @@ function frame(now) {
   // diverge, and a NaN in a field like this never washes out again.
   if (!(dt > 0)) dt = 1 / 60;
   if (dt > 0.25) dt = 0.25;            // returning from a background tab
+
+  // If frames are arriving at a normal cadence then the app is plainly being
+  // drawn, so it is not away - whatever the platform did or did not tell us.
+  //
+  // This exists because focusPaused used to be set and cleared only by
+  // visibilitychange, and Android's WebView is not reliable about firing it:
+  // WebView.onPause makes no promise about the page's visibility state, and
+  // pauseTimers stops JavaScript immediately afterwards. The hidden side of
+  // the event arrived, the visible side on return did not, and the session sat
+  // frozen with the only available control being the one that cancels it.
+  //
+  // A backgrounded or sleeping app issues no animation frames at all, so
+  // coming back produces one long gap and then ordinary ones. That is a fact
+  // about the clock rather than a platform courtesy, which is the point: it
+  // holds in a plain browser and in the WebView alike. visibilitychange is
+  // still handled, because where it works it responds a frame sooner - it is
+  // just no longer the only way out.
+  if (state.focusPaused && gap <= 0.25) setFocusPaused(false);
 
   air.update(dt);
 

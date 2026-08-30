@@ -55,6 +55,9 @@ const wickPoint = () => page.evaluate(() => {
   return { x: r.cx / r.dpr, y: r.py(r.wax.wickTop) / r.dpr };
 });
 
+/** Milliseconds left on the focus session. */
+const focusLeft = () => page.evaluate(() => window.__candle.state.focusLeft);
+
 const results = [];
 const check = (name, pass, detail = '') => {
   results.push({ name, pass, detail });
@@ -199,6 +202,42 @@ if (zenRing) {
   await tap(zenRing.x, zenRing.y);
   check('the ring lights the candle in zen', await lit() === true);
 }
+
+// 9. A focus session must not get stuck paused.
+//
+//    On Android the WebView delivers the hidden half of visibilitychange and,
+//    on return, never delivers the visible half - so the flag stayed set, the
+//    clock never advanced again, and the only control available was the one
+//    that cancels the session.
+//
+//    Frames keep arriving in a headless page even while it reports itself
+//    hidden, which a real backgrounded app does not do. So the pause is
+//    checked synchronously, and the recovery is checked from the stuck state
+//    itself, with document.hidden left jammed at true to prove the way out
+//    does not depend on it.
+await relight();
+await page.click('#btnFocus');
+await page.waitForTimeout(600);
+
+const pausedOnLeaving = await page.evaluate(() => {
+  Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+  document.dispatchEvent(new Event('visibilitychange'));
+  return window.__candle.state.focusPaused;      // read before any frame runs
+});
+check('leaving pauses the session', pausedOnLeaving === true);
+
+// The state the WebView leaves behind: paused, no visible event ever coming,
+// and document.hidden still insisting the page is not on screen.
+await page.evaluate(() => { window.__candle.state.focusPaused = true; });
+const pausedAt = await focusLeft();
+await page.waitForTimeout(1200);
+check('...and it resumes without the matching visible event',
+  await page.evaluate(() => window.__candle.state.focusPaused) === false);
+const resumedAt = await focusLeft();
+check('...with the clock running again', resumedAt < pausedAt - 500,
+  `${(pausedAt / 1000).toFixed(1)}s -> ${(resumedAt / 1000).toFixed(1)}s`);
+check('...and the note stopped saying it was paused',
+  !(await page.evaluate(() => document.getElementById('timerNote').textContent)).includes('Paused'));
 
 await browser.close();
 if (errors.length) { console.log('PAGE ERRORS:'); errors.slice(0, 5).forEach((e) => console.log('  ', e)); }

@@ -64,9 +64,11 @@ running on the user's phone (Xiaomi/MIUI).
 | OLED — true black outside the lit area | ✅ user-confirmed |
 | Screen lock | ✅ user-confirmed "100%" |
 | Light pool at the base | ✅ user-confirmed fixed |
-| Focus timer + candle shrinking | ✅ looking right, full 25-min run still pending |
+| Focus timer + candle shrinking | ✅ user-confirmed over a full session |
 | Microphone blow-out | ✅ user-confirmed, on native `AudioRecord` capture |
 | Double-tap to wake, ring to relight | ✅ user-confirmed |
+| System bars hidden, incl. after the mic | ✅ user-confirmed |
+| Full 25-minute focus run | ✅ user-confirmed |
 
 ### Not yet working
 
@@ -190,11 +192,8 @@ of the simulated volume.
 
 ## 7. Open issues
 
-1. **Flame shape** — see §5. Deferred by the user to last.
-2. **25-minute timer run** — not yet completed end to end.
-3. **Fullscreen untested on the device** — the system bars were never actually
-   being hidden (see the progress log); the fix compiles but has not been seen
-   working on the phone.
+1. **Flame shape** — see §5. Deferred by the user to last. This is now the only
+   substantial thing left.
 
 ## 8. Play Store readiness
 
@@ -281,6 +280,47 @@ which request shape was last tried.
 **Untested on the device as of writing.** If it fails again, `audio inputs: 0`
 would point upstream of this app entirely — MIUI's privacy layer is the
 suspect — while a success on `plain` confirms the constraint theory.
+
+### 2026-08-30 — a focus session that could not be resumed
+
+Four fixes confirmed on the device in one go: the system bars stay hidden, the
+microphone permission dialog no longer brings them back, a full 25-minute
+session runs correctly, the relight ring is clean, and zen can relight. That
+leaves the flame's shape as the only substantial thing outstanding.
+
+One fault left. Leaving the app during a session and returning left the timer
+stopped with no way to restart it — literally none: `btn.focus` calls
+`endFocus`, which cancels.
+
+`state.focusPaused` was set and cleared **only** by `visibilitychange`, and
+Android's WebView is not reliable about firing it. `WebView.onPause` makes no
+promise about the page's visibility state, and `MainActivity.onPause` calls
+`pauseTimers()` immediately afterwards, which stops JavaScript. The hidden half
+of the event arrived; the visible half on return did not. A sticky flag with a
+single way out, and the platform owned that way out.
+
+The obvious suspect was wrong and worth recording: `dt` is already clamped to
+0.25 s, so a long absence cannot eat the session. The clock was not consumed,
+it was frozen.
+
+The fix is one line and deliberately owes the platform nothing: **if frames are
+arriving at a normal cadence, the app is being drawn, so it is not away.** A
+backgrounded or sleeping app issues no animation frames, so returning gives one
+long gap and then ordinary ones — a fact about the clock rather than a platform
+courtesy. `visibilitychange` is still handled, because where it works it
+responds a frame sooner; it is simply no longer load-bearing.
+
+Generalising, since this is the third fix of the same shape after the system
+bars and the microphone: **do not let an Android platform signal be the only
+way out of a state.** Each of those three read correctly and did nothing on the
+device. Where a state can be derived from something observable — a frame
+cadence, a sample actually arriving — derive it, and treat the platform event
+as an optimisation.
+
+The user chose auto-resume over tap-to-resume when asked. `tap-check.mjs` is at
+30 checks; the new one reproduces the one-sided event rather than approximating
+it, and was confirmed to freeze the clock at exactly 1499.3s with the fix
+removed.
 
 ### 2026-08-30 — a mark with nothing lighting it, and a trap in zen
 
