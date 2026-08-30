@@ -1,0 +1,157 @@
+package com.candleapp.flame
+
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Bundle
+import android.view.View
+import android.view.WindowManager
+import android.webkit.PermissionRequest
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import androidx.activity.ComponentActivity
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.view.WindowCompat
+import androidx.webkit.WebViewAssetLoader
+
+/**
+ * Native shell around the candle simulation.
+ *
+ * The simulation itself is one self-contained HTML file in assets, built by
+ * tools/build.mjs. Everything this class adds is something the web layer
+ * cannot do for itself: keep the screen awake, drive the backlight, and hand
+ * the microphone over when the user asks to blow the candle out.
+ *
+ * The page is served over https://appassets.androidplatform.net/ rather than
+ * loaded from a file:// URL. That matters: getUserMedia only runs in a secure
+ * context, and a real HTTPS origin also avoids the assorted restrictions
+ * Chromium places on file:// pages. WebViewAssetLoader maps that origin onto
+ * the assets folder without any network access.
+ */
+class MainActivity : ComponentActivity() {
+
+    private lateinit var web: WebView
+    private var pendingMic: PermissionRequest? = null
+
+    private val micPermission = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        pendingMic?.let { req ->
+            if (granted) req.grant(arrayOf(PermissionRequest.RESOURCE_AUDIO_CAPTURE))
+            else req.deny()
+        }
+        pendingMic = null
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        // A candle you have to keep tapping to stop the screen dimming is not
+        // a candle. This flag needs no permission.
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        window.decorView.systemUiVisibility =
+            View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+            View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
+            View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+            View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+
+        val loader = WebViewAssetLoader.Builder()
+            .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
+            .build()
+
+        web = WebView(this).apply {
+            setBackgroundColor(android.graphics.Color.BLACK)
+            settings.javaScriptEnabled = true
+            settings.domStorageEnabled = true
+            // The crackle is synthesised on the fly, so it must be allowed to
+            // start without a separate gesture of its own.
+            settings.mediaPlaybackRequiresUserGesture = false
+            // No remote content is ever loaded, so leave these shut.
+            settings.allowFileAccess = false
+            settings.allowContentAccess = false
+            settings.cacheMode = android.webkit.WebSettings.LOAD_NO_CACHE
+            isVerticalScrollBarEnabled = false
+            isHorizontalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+
+            webViewClient = object : WebViewClient() {
+                override fun shouldInterceptRequest(
+                    view: WebView,
+                    request: WebResourceRequest
+                ): WebResourceResponse? = loader.shouldInterceptRequest(request.url)
+
+                /** Nothing in this app should ever navigate anywhere. */
+                override fun shouldOverrideUrlLoading(
+                    view: WebView,
+                    request: WebResourceRequest
+                ): Boolean = true
+            }
+
+            webChromeClient = object : WebChromeClient() {
+                override fun onPermissionRequest(request: PermissionRequest) {
+                    val wantsMic = request.resources.contains(
+                        PermissionRequest.RESOURCE_AUDIO_CAPTURE
+                    )
+                    if (!wantsMic) { request.deny(); return }
+                    runOnUiThread {
+                        val granted = checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
+                            PackageManager.PERMISSION_GRANTED
+                        if (granted) {
+                            request.grant(arrayOf(PermissionRequest.RESOURCE_AUDIO_CAPTURE))
+                        } else {
+                            // Only ask at the moment the user taps the mic
+                            // button, never on launch.
+                            pendingMic = request
+                            micPermission.launch(Manifest.permission.RECORD_AUDIO)
+                        }
+                    }
+                }
+            }
+
+            addJavascriptInterface(HostBridge(), "CandleHost")
+        }
+
+        setContentView(web)
+        web.loadUrl("https://appassets.androidplatform.net/assets/candle.html")
+    }
+
+    /**
+     * The small amount of hardware the web layer cannot reach on its own.
+     *
+     * Brightness is set on this window's own attributes, not through the
+     * system setting, so it needs no permission and Android restores the
+     * user's own brightness automatically when they leave.
+     */
+    inner class HostBridge {
+        @android.webkit.JavascriptInterface
+        fun setBrightness(value: Float) {
+            runOnUiThread {
+                window.attributes = window.attributes.apply {
+                    screenBrightness = value.coerceIn(0.02f, 1.0f)
+                }
+            }
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        web.onPause()
+        web.pauseTimers()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        web.resumeTimers()
+        web.onResume()
+    }
+
+    override fun onDestroy() {
+        web.destroy()
+        super.onDestroy()
+    }
+}

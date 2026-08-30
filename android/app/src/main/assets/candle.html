@@ -1,0 +1,2960 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<meta name="description" content="A candle simulated from first principles: buoyant combustion, blackbody radiation, and real wax melting.">
+<title>Candle</title>
+<style>
+/* The whole interface is deliberately quiet. Anything that is not the flame
+   competes with it, so the controls sit on glass, stay small, and fade out. */
+:root {
+  --flame: #ff8500;          /* blackbody at 1850 K - see blackbody.js */
+  --glass: rgba(255, 255, 255, 0.055);
+  --edge: rgba(255, 255, 255, 0.11);
+  --ink: rgba(255, 255, 255, 0.42);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #000;
+  color: #fff;
+  touch-action: none;
+  overscroll-behavior: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  font: 400 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+        "Helvetica Neue", Arial, sans-serif;
+}
+
+#stage {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  z-index: 1;
+}
+
+#ui {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: max(28px, env(safe-area-inset-bottom));
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 22px;
+  transition: opacity 900ms ease, transform 900ms ease;
+}
+#ui.dim { opacity: 0; transform: translateY(10px); pointer-events: none; }
+
+/* ------------------------------------------------------------- the readout */
+#readout {
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  display: flex;
+  gap: 16px;
+  min-height: 14px;
+}
+#readout b { font-weight: 500; color: rgba(255, 210, 160, 0.72); }
+
+/* ------------------------------------------------------------- the toolbar */
+#toolbar { display: flex; gap: 14px; }
+
+.tool {
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--edge);
+  background: var(--glass);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  color: rgba(255, 255, 255, 0.62);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: background 260ms ease, color 260ms ease,
+              border-color 260ms ease, transform 160ms ease;
+}
+.tool svg {
+  width: 19px; height: 19px;
+  fill: none; stroke: currentColor;
+  stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round;
+}
+.tool:active { transform: scale(0.93); }
+.tool[aria-pressed="true"] {
+  background: rgba(255, 133, 0, 0.17);
+  border-color: rgba(255, 133, 0, 0.45);
+  color: rgba(255, 198, 140, 0.95);
+}
+.tool:focus-visible { outline: 2px solid rgba(255, 170, 90, 0.7); outline-offset: 3px; }
+
+/* ---------------------------------------------------------------- the dial */
+#dial {
+  position: relative;
+  width: 92px;
+  height: 92px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  background: rgba(12, 10, 9, 0.5);
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
+  display: grid;
+  place-items: center;
+  cursor: grab;
+  box-shadow: 0 12px 44px rgba(0, 0, 0, 0.75),
+              inset 0 1px 1px rgba(255, 255, 255, 0.07);
+  touch-action: none;
+}
+#dial:active { cursor: grabbing; }
+#dial:focus-visible { outline: 2px solid rgba(255, 170, 90, 0.7); outline-offset: 4px; }
+
+/* The arc is a masked conic gradient, so it costs one element and no SVG. */
+#dialTrack {
+  position: absolute;
+  inset: 9px;
+  border-radius: 50%;
+  background: conic-gradient(
+    from 180deg,
+    var(--flame) 0 calc(var(--p, 0.7) * 270deg),
+    rgba(255, 255, 255, 0.075) calc(var(--p, 0.7) * 270deg) 270deg,
+    transparent 270deg 360deg);
+  mask: radial-gradient(circle, transparent 0 30px, #000 31px);
+  -webkit-mask: radial-gradient(circle, transparent 0 30px, #000 31px);
+  transition: none;
+}
+#dialGlow {
+  position: absolute;
+  inset: -14px;
+  border-radius: 50%;
+  pointer-events: none;
+  background: radial-gradient(circle,
+    rgba(255, 133, 0, calc(var(--p, 0.7) * 0.22)) 0%, transparent 68%);
+}
+/* A tiny flame glyph in the middle, scaled by the dial value. */
+#dialFlame {
+  width: 15px;
+  height: 21px;
+  border-radius: 50% 50% 50% 50% / 62% 62% 38% 38%;
+  background: linear-gradient(to top, #ffd08a, var(--flame) 55%, #ff5a10);
+  transform: scale(calc(0.45 + var(--p, 0.7) * 0.75));
+  filter: blur(0.4px) drop-shadow(0 0 9px rgba(255, 133, 0, 0.85));
+  transition: transform 140ms ease;
+}
+#dial.out #dialFlame { background: rgba(255, 255, 255, 0.14); filter: none; box-shadow: none; }
+
+#hint {
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.2);
+  transition: opacity 500ms ease;
+}
+
+/* --------------------------------------------------------------- overlays */
+#timerBar {
+  position: fixed;
+  top: max(46px, calc(env(safe-area-inset-top) + 26px));
+  left: 0; right: 0;
+  z-index: 3;
+  text-align: center;
+  opacity: 0;
+  transition: opacity 600ms ease;
+  pointer-events: none;
+}
+#timerBar.on { opacity: 1; }
+#timerText {
+  display: block;
+  font-size: 32px;
+  font-weight: 200;
+  letter-spacing: 0.14em;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 226, 190, 0.85);
+  text-shadow: 0 0 22px rgba(255, 133, 0, 0.35);
+}
+#timerNote {
+  display: block;
+  margin-top: 8px;
+  font-size: 9.5px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.26);
+}
+
+#verse {
+  position: fixed;
+  top: 24%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(86%, 420px);
+  z-index: 2;
+  text-align: center;
+  opacity: 0;
+  transition: opacity 2.6s ease;
+  pointer-events: none;
+}
+#verse.on { opacity: 1; }
+#verse .line {
+  margin: 0 0 14px;
+  font-size: 19px;
+  font-weight: 300;
+  font-style: italic;
+  line-height: 1.75;
+  color: rgba(255, 214, 170, 0.82);
+  text-shadow: 0 2px 20px rgba(0, 0, 0, 0.9);
+}
+#verse .sub {
+  margin: 0;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.3);
+}
+
+#toast {
+  position: fixed;
+  bottom: max(150px, calc(env(safe-area-inset-bottom) + 150px));
+  left: 50%;
+  transform: translate(-50%, 8px);
+  z-index: 4;
+  padding: 9px 17px;
+  border-radius: 999px;
+  border: 1px solid var(--edge);
+  background: rgba(18, 15, 13, 0.82);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.8);
+  opacity: 0;
+  transition: opacity 380ms ease, transform 380ms ease;
+  pointer-events: none;
+  max-width: 82vw;
+  text-align: center;
+}
+#toast.on { opacity: 1; transform: translate(-50%, 0); }
+
+/* Reading mode widens the light and calms the interface right down. */
+body.reading #hint, body.reading #readout { opacity: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  #ui, #verse, #toast, #timerBar { transition-duration: 1ms; }
+}
+
+</style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+
+  <div id="ui">
+    <div id="readout" aria-live="polite"></div>
+
+    <div id="toolbar" role="toolbar" aria-label="Modes">
+      <button class="tool" id="btnMic"   aria-pressed="false" title="Blow out with the microphone" aria-label="Microphone blow-out">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3z"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+      </button>
+      <button class="tool" id="btnFocus" aria-pressed="false" title="25-minute focus session" aria-label="Focus timer">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5M9 2h6"/></svg>
+      </button>
+      <button class="tool" id="btnRead"  aria-pressed="false" title="Reading light" aria-label="Reading light">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h6a3 3 0 0 1 3 3v11a2.5 2.5 0 0 0-2.5-2.5H3zM21 5h-6a3 3 0 0 0-3 3v11a2.5 2.5 0 0 1 2.5-2.5H21z"/></svg>
+      </button>
+      <button class="tool" id="btnSound" aria-pressed="false" title="Wick crackle" aria-label="Sound">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9zM17 9.5a3.5 3.5 0 0 1 0 5M19.5 7a7 7 0 0 1 0 10"/></svg>
+      </button>
+      <button class="tool" id="btnZen"   aria-pressed="false" title="Hide everything" aria-label="Solitude mode">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6z"/><circle cx="12" cy="12" r="2.5"/></svg>
+      </button>
+    </div>
+
+    <div id="dial" role="slider" tabindex="0" aria-label="Flame intensity"
+         aria-valuemin="0" aria-valuemax="100" aria-valuenow="70">
+      <div id="dialTrack"></div>
+      <div id="dialGlow"></div>
+      <div id="dialFlame"></div>
+    </div>
+    <div id="hint">Drag the dial &middot; tap the flame to light it</div>
+  </div>
+
+  <div id="timerBar"><span id="timerText"></span><span id="timerNote"></span></div>
+  <div id="verse"><p class="line"></p><p class="sub"></p></div>
+  <div id="toast"></div>
+
+  <script>
+"use strict";
+// ==================================================================
+// constants.js
+// ==================================================================
+
+/**
+ * Physical constants for the candle simulation.
+ *
+ * Everything here is in SI units and sourced from real measurements of
+ * paraffin-wax candles. The renderer converts metres to pixels exactly once
+ * (see `renderer.js`), so the simulation itself never thinks in pixels.
+ *
+ * References for the values used:
+ *  - Hamins, Bundy & Dillon, "Characterization of Candle Flames",
+ *    Journal of Fire Protection Engineering 15 (2005): a standard 2 cm candle
+ *    burns ~0.105 g/min and releases ~80 W, flame height ~40 mm.
+ *  - Faraday, "The Chemical History of a Candle" (1861) for the melt-pool /
+ *    capillary description that the wax model follows.
+ *  - Flicker frequency correlation f ~ 1.5 / sqrt(D) Hz for buoyant diffusion
+ *    flames (Cetegen & Ahmed, Combustion and Flame 93 (1993)), which puts a
+ *    ~10 mm candle at 12-15 Hz.
+ */
+
+// ---------------------------------------------------------------- environment
+const G = 9.81;                 // m/s^2, gravitational acceleration
+const T_AMBIENT = 293.15;       // K, room temperature (20 C)
+const RHO_AIR = 1.204;          // kg/m^3, air density at T_AMBIENT
+// Molecular transport in air near room temperature. These matter: a candle
+// burns as a *diffusion* flame, so the rate at which oxygen can diffuse into
+// the reaction zone is what holds the flame steady between puffs.
+const D_MASS = 2.0e-5;          // m^2/s, O2 and fuel vapour in air
+const ALPHA_THERMAL = 2.2e-5;   // m^2/s, thermal diffusivity of air
+const D_SOOT = 4.0e-6;          // m^2/s, soot particles are far slower
+
+// ---------------------------------------------------------------------- flame
+// Adiabatic flame temperature of paraffin in air is ~2000 K, but the luminous
+// soot shell that we actually see radiates between roughly 1100 K (dim tip)
+// and 1700 K (bright body). The blue base is chemiluminescence, not a
+// blackbody, so it is added separately by the renderer.
+const T_FLAME_PEAK = 1700;      // K, hottest luminous soot
+const T_ADIABATIC = 2230;       // K, adiabatic flame temperature of paraffin in air
+const STOICH_RATIO = 3.45;      // kg of O2 consumed per kg of paraffin
+const Y_O2_AIR = 0.232;         // mass fraction of oxygen in air
+/**
+ * Stoichiometric mixture fraction: the proportion of fuel in a fuel-air mix
+ * that burns with nothing left over. For paraffin it is about 0.063 - fuel
+ * and air burn cleanly at roughly one part fuel to fifteen parts air.
+ *
+ * This small number is the single most important fact about the shape of a
+ * candle flame. The flame sits where the mixture fraction has fallen to
+ * Z_st, and because that is so dilute, the sheet stands far out from the
+ * wick in air that has been heavily diluted by diffusion. It is why a
+ * diffusion flame is many times wider than the wick that feeds it, and why
+ * it closes over into a teardrop rather than running on as a column.
+ */
+const Z_STOICH = Y_O2_AIR / (Y_O2_AIR + STOICH_RATIO);
+const T_SOOT_IGNITION = 1000;   // K, soot inception, where particles form
+/**
+ * Where soot stops being *visible*, which is a different number entirely.
+ * Particles keep radiating as they cool past inception, and the dull red
+ * outer envelope and tip of a candle flame are soot down around 800 K.
+ * Using the inception temperature as the emission cutoff cropped that whole
+ * envelope away and left only a thin bright core.
+ */
+const T_SOOT_GLOW_FLOOR = 820;
+const FLAME_DIAMETER = 0.010;   // m, luminous zone width
+const FLAME_HEIGHT = 0.040;     // m, typical steady flame height
+const FLICKER_HZ = 1.5 / Math.sqrt(FLAME_DIAMETER); // ~15 Hz
+
+// Luminous output. The candela was originally defined as the luminous
+// intensity of one standard candle, which is where the 1.0 comes from.
+const LUMINOUS_INTENSITY = 1.0; // cd at full intensity
+const T_COLOR_ROOM = 1850;      // K, correlated colour temp of the cast light
+
+// ------------------------------------------------------------------------ wax
+const RHO_WAX = 900;            // kg/m^3, solid paraffin
+const T_WAX_MELT = 330;         // K (57 C), paraffin melting point
+const T_WAX_POOL = 345;         // K, steady temperature of the melt pool
+const HEAT_OF_COMBUSTION = 46.1e6; // J/kg, paraffin
+const MASS_BURN_RATE = 0.105 / 60 / 1000; // kg/s (0.105 g/min)
+const HEAT_RELEASE = MASS_BURN_RATE * HEAT_OF_COMBUSTION; // ~81 W
+
+// Only a few percent of the flame's heat conducts back down into the wax;
+// the rest radiates and convects away. This fraction sets the melt pool depth.
+const MELT_FEEDBACK_FRACTION = 0.03;
+const HEAT_OF_FUSION_WAX = 200e3; // J/kg
+const WAX_CONDUCTIVITY = 0.25;    // W/(m K), solid paraffin
+
+// ---------------------------------------------------------------- candle body
+// A slimmer pillar, 28 mm across. Two reasons, both of which matter: the
+// flame reads at the right scale against it (a real candle's flame is roughly
+// a quarter of the candle's width), and a narrower column loses height far
+// faster for the same mass burnt - about 11 mm an hour rather than 4 - so the
+// melting is actually something you can watch happen.
+const CANDLE_RADIUS = 0.014;    // m
+const CANDLE_HEIGHT_0 = 0.130;  // m, starting height
+const WICK_RADIUS = 0.0008;     // m
+const WICK_EXPOSED = 0.006;     // m of wick standing above the wax
+
+// ---------------------------------------------------------- molten wax rheology
+// Molten paraffin is close to Newtonian just above its melting point. The
+// viscosity climbs steeply as it cools, which is exactly why a drip slows
+// down as it runs and then freezes in place partway down the side.
+const MU_WAX_REF = 4.0e-3;      // Pa s at T_WAX_POOL
+const MU_ARRHENIUS_E_OVER_R = 6000; // K, activation temperature
+const WAX_COOLING_TAU = 2.2;    // s, Newtonian cooling time of a drip
+
+// ------------------------------------------------------------------------ air
+// Blowing on a candle produces a jet of order 1-5 m/s at the flame. A flame
+// is extinguished when the strain it experiences outruns the chemistry, i.e.
+// when the Damkohler number falls below unity.
+const BLOW_VELOCITY_MAX = 6.0;  // m/s
+const EXTINCTION_STRAIN = 165;  // 1/s, critical strain rate
+const DRAFT_SIGMA = 0.045;      // m/s, RMS of the ambient room draft
+const DRAFT_TAU = 1.7;          // s, correlation time of that draft
+
+// ==================================================================
+// blackbody.js
+// ==================================================================
+
+/**
+ * Blackbody radiation -> sRGB.
+ *
+ * The colour of a candle flame is not a design choice, it is the incandescence
+ * of soot particles at 1100-1700 K. Rather than hand-picking oranges we
+ * integrate Planck's law against the CIE 1931 colour matching functions and
+ * convert the result to sRGB. The gradient this produces (deep red tip ->
+ * amber body -> near-white core) is the reason the flame reads as fire instead
+ * of as a yellow shape.
+ *
+ * The colour matching functions use the multi-lobe Gaussian fits from
+ * Wyman, Sloan & Shirley, "Simple Analytic Approximations to the CIE XYZ
+ * Colour Matching Functions", JCGT 2 (2013). They are accurate to well under
+ * a perceptual JND, which is far more than we need.
+ */
+
+const H = 6.62607015e-34;  // J s, Planck constant
+const C = 2.99792458e8;    // m/s, speed of light
+const KB = 1.380649e-23;   // J/K, Boltzmann constant
+
+/** Piecewise Gaussian with different widths either side of the peak. */
+function pieceGauss(x, mu, s1, s2) {
+  const t = (x - mu) * (x < mu ? 1 / s1 : 1 / s2);
+  return Math.exp(-0.5 * t * t);
+}
+
+function cieX(l) {
+  return 1.056 * pieceGauss(l, 599.8, 37.9, 31.0)
+       + 0.362 * pieceGauss(l, 442.0, 16.0, 26.7)
+       - 0.065 * pieceGauss(l, 501.1, 20.4, 26.2);
+}
+function cieY(l) {
+  return 0.821 * pieceGauss(l, 568.8, 46.9, 40.5)
+       + 0.286 * pieceGauss(l, 530.9, 16.3, 31.1);
+}
+function cieZ(l) {
+  return 1.217 * pieceGauss(l, 437.0, 11.8, 36.0)
+       + 0.681 * pieceGauss(l, 459.0, 26.0, 13.8);
+}
+
+/** Planck spectral radiance at wavelength `lambdaNm` (nm) and temperature T (K). */
+function planck(lambdaNm, T) {
+  const l = lambdaNm * 1e-9;
+  const a = (2 * H * C * C) / Math.pow(l, 5);
+  const b = Math.exp((H * C) / (l * KB * T)) - 1;
+  return a / b;
+}
+
+/** Integrate Planck's law against the CIE observer. Returns unnormalised XYZ. */
+function blackbodyXYZ(T) {
+  let X = 0, Y = 0, Z = 0;
+  for (let l = 380; l <= 780; l += 5) {
+    const p = planck(l, T);
+    X += p * cieX(l);
+    Y += p * cieY(l);
+    Z += p * cieZ(l);
+  }
+  return [X * 5, Y * 5, Z * 5];
+}
+
+/** Linear-light sRGB primaries (sRGB / Rec.709, D65 white). */
+function xyzToLinearSrgb([X, Y, Z]) {
+  return [
+     3.2406 * X - 1.5372 * Y - 0.4986 * Z,
+    -0.9689 * X + 1.8758 * Y + 0.0415 * Z,
+     0.0557 * X - 0.2040 * Y + 1.0570 * Z,
+  ];
+}
+
+/** sRGB electro-optical transfer function (gamma encode). */
+function encodeSrgb(c) {
+  const v = Math.max(0, Math.min(1, c));
+  return v <= 0.0031308 ? 12.92 * v : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
+}
+
+/**
+ * Chromaticity of a blackbody at T, normalised so the brightest channel is 1.
+ * Intensity is kept separate from hue so the renderer can scale emission
+ * without desaturating the colour.
+ */
+function blackbodyRGB(T) {
+  let rgb = xyzToLinearSrgb(blackbodyXYZ(T));
+  // Desaturate out-of-gamut colours towards white rather than clipping a
+  // channel to zero, which would swing the hue.
+  const min = Math.min(rgb[0], rgb[1], rgb[2]);
+  if (min < 0) rgb = rgb.map((c) => c - min);
+  const max = Math.max(rgb[0], rgb[1], rgb[2]) || 1;
+  return rgb.map((c) => c / max);
+}
+
+const LUT_MIN_K = 800;
+const LUT_MAX_K = 2600;
+const LUT_STEPS = 256;
+
+/**
+ * Precomputed 0..255 sRGB ramp across the temperature range a candle actually
+ * occupies. Built once at load; the render loop only ever does a table lookup.
+ */
+function buildTemperatureLUT() {
+  const lut = new Uint8Array(LUT_STEPS * 3);
+  for (let i = 0; i < LUT_STEPS; i++) {
+    const T = LUT_MIN_K + (LUT_MAX_K - LUT_MIN_K) * (i / (LUT_STEPS - 1));
+    const rgb = blackbodyRGB(T);
+    lut[i * 3 + 0] = Math.round(255 * encodeSrgb(rgb[0]));
+    lut[i * 3 + 1] = Math.round(255 * encodeSrgb(rgb[1]));
+    lut[i * 3 + 2] = Math.round(255 * encodeSrgb(rgb[2]));
+  }
+  return lut;
+}
+
+/** Index into the LUT for a temperature in kelvin. */
+function lutIndex(T) {
+  const t = (T - LUT_MIN_K) / (LUT_MAX_K - LUT_MIN_K);
+  return Math.max(0, Math.min(LUT_STEPS - 1, Math.round(t * (LUT_STEPS - 1))));
+}
+
+/** CSS `rgb()` string for a blackbody at T. Used by the UI and glow layers. */
+function blackbodyCSS(T, scale = 1) {
+  const rgb = blackbodyRGB(T);
+  const c = rgb.map((v) => Math.round(255 * encodeSrgb(v * scale)));
+  return `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
+}
+
+// ==================================================================
+// abel.js
+// ==================================================================
+
+/**
+ * Forward Abel projection: turning an axisymmetric radial slice into the
+ * image a camera would actually record.
+ *
+ * The solver works on a two-dimensional slice through the flame's axis, so
+ * `T` and `soot` at column i are values *at that radius*. A photograph is not
+ * a slice. Light reaching one pixel has travelled a chord straight through
+ * the whole three-dimensional flame, picking up emission from every radius
+ * the chord crosses. For an axisymmetric source that line integral is the
+ * forward Abel transform,
+ *
+ *     P(x) = 2 * integral from r=|x| to R of  eps(r) * r / sqrt(r^2 - x^2) dr
+ *
+ * Flame diagnostics run this backwards - Abel inversion - to recover a radial
+ * emission profile from a photograph of a flame. Running it forwards is how
+ * we get from the simulated profile to something that looks photographed.
+ *
+ * Two things fall out of it for free, and both are visible in any real
+ * photograph of a candle:
+ *
+ *  - the flame appears wider than the slice, because off-axis chords still
+ *    cut through emitting material;
+ *  - limb brightening, the bright rim just inside the flame's edge, where the
+ *    chord runs a long way tangentially through the luminous shell.
+ *
+ * The weights depend only on geometry, so they are built once.
+ */
+
+/** Precomputed chord weights for one half-width of `n` radial samples. */
+class AbelProjector {
+  /**
+   * @param {number} n          radial samples from the axis to the edge
+   * @param {number} refRadius  radius, in cells, used to normalise the result
+   */
+  constructor(n, refRadius = 3) {
+    this.n = n;
+    // For each projected offset x, the radii it crosses and their weights.
+    this.offsets = [];
+    for (let x = 0; x < n; x++) {
+      const idx = [];
+      const w = [];
+      for (let r = x; r < n; r++) {
+        // Analytic integral of r / sqrt(r^2 - x^2) across the cell [r, r+1],
+        // which stays finite at the r = x singularity where a naive
+        // midpoint sample would blow up.
+        const lo = Math.max(r, x);
+        const hi = r + 1;
+        const a = Math.sqrt(Math.max(0, hi * hi - x * x));
+        const b = Math.sqrt(Math.max(0, lo * lo - x * x));
+        const weight = 2 * (a - b);
+        if (weight > 1e-6) { idx.push(r); w.push(weight); }
+      }
+      this.offsets.push({ idx: Int32Array.from(idx), w: Float32Array.from(w) });
+    }
+    // The transform has units of emission times length, so it needs a
+    // reference path to divide by. Using the whole domain width would make
+    // brightness depend on how much empty air happened to be simulated. The
+    // meaningful scale is the chord straight through the flame's luminous
+    // core, about 4 mm, which keeps projected brightness on the same footing
+    // as the slice it came from.
+    const ref = 2 * refRadius;
+    for (const o of this.offsets) for (let k = 0; k < o.w.length; k++) o.w[k] /= ref;
+  }
+
+  /**
+   * Project one radial profile into one image row.
+   * @param {Float32Array} radial  emission per radius, length >= n
+   * @param {Float32Array} out     projected values, length n
+   */
+  project(radial, out) {
+    for (let x = 0; x < this.n; x++) {
+      const { idx, w } = this.offsets[x];
+      let sum = 0;
+      for (let k = 0; k < idx.length; k++) sum += radial[idx[k]] * w[k];
+      out[x] = sum;
+    }
+  }
+}
+
+// ==================================================================
+// flamecolor.js
+// ==================================================================
+
+/**
+ * Mapping simulation state to flame colour.
+ *
+ * Kept separate from the renderer so it can be exercised headlessly (see
+ * tools/flamepic.mjs) - the look of the flame is the thing most worth
+ * iterating on, and doing that through a browser screenshot each time is
+ * needlessly slow.
+ *
+ * A candle flame has two distinct emitters stacked on top of each other:
+ *
+ *  - Soot incandescence. Carbon particles formed on the fuel-rich side of
+ *    the flame sheet glow as near-blackbodies at 1100-1700 K. This is almost
+ *    all of the visible light and all of the yellow.
+ *  - Chemiluminescence. At the base, where oxygen is plentiful and there is
+ *    not yet any soot, excited CH and C2 radicals emit in narrow bands around
+ *    430 and 516 nm. That light is blue and does not lie on the blackbody
+ *    locus at all, so it cannot come from the same lookup.
+ *
+ * How much of the soot's light reaches the eye depends on how much soot is
+ * in the way, which is the Beer-Lambert optical depth: 1 - exp(-k * c).
+ */
+
+
+
+
+const LUT = buildTemperatureLUT();
+
+/** Soot column density that makes the flame optically thick. */
+const SOOT_OPACITY = 26;
+/** Temperature span, above the soot glow point, that saturates the emission. */
+const GLOW_SPAN = 700;
+/**
+ * How strongly the blue reaction zone shows through. The blue base of a
+ * candle is real but small - a few millimetres at the very bottom - and it
+ * is easy to overdo to the point where the whole flame turns lilac.
+ */
+const BLUE_GAIN = 34;
+
+/**
+ * Fraction of the peak reaction rate below which the blue zone is not drawn.
+ * Without it the whole flame sheet outlines itself in blue from wick to tip,
+ * because there is a reaction everywhere along it. On a real candle only the
+ * base looks blue: that is where air entrained from below meets fuel before
+ * any soot has formed to sit in front of it.
+ */
+const BLUE_THRESHOLD = 0.42;
+
+/**
+ * Exposure applied after projection, then a Reinhard roll-off.
+ *
+ * Emission along a ray is an unbounded quantity and a flame covers a huge
+ * dynamic range: the core is orders of magnitude brighter than the tip. Both
+ * a camera and the eye compress that, and the compression is why a flame
+ * photograph has a white-hot centre fading through yellow to a dim red edge
+ * rather than a flat orange shape. Clipping instead of rolling off would
+ * posterise the core into a hard-edged blob.
+ */
+const EXPOSURE = 2.6;
+
+/** Reinhard tone map on a 0-255 scale, with exposure applied first. */
+function toneMap(v) {
+  const x = (v / 255) * EXPOSURE;
+  return 255 * (x / (1 + x));
+}
+
+/**
+ * Emitted colour of one cell, written into `out` as three 0-255 values.
+ * `out` is reused by the caller to avoid allocating per pixel.
+ */
+function flamePixel(T, soot, rate, out) {
+  let r = 0, g = 0, b = 0;
+
+  if (T > T_SOOT_GLOW_FLOOR && soot > 0) {
+    // Beer-Lambert: an optically thick region radiates as a blackbody, a thin
+    // one in proportion to how much soot it holds.
+    const tau = 1 - Math.exp(-SOOT_OPACITY * soot);
+    const bright = Math.min(1, Math.pow((T - T_SOOT_GLOW_FLOOR) / GLOW_SPAN, 1.25));
+    const e = tau * bright;
+    if (e > 0.002) {
+      const li = lutIndex(T) * 3;
+      r = LUT[li] * e;
+      g = LUT[li + 1] * e;
+      b = LUT[li + 2] * e;
+    }
+  }
+
+  // The blue zone is only visible where soot has not yet formed to hide it.
+  if (rate > 1e-6) {
+    const strength = (Math.min(1, rate * BLUE_GAIN) - BLUE_THRESHOLD) / (1 - BLUE_THRESHOLD);
+    const blue = Math.max(0, strength) * Math.exp(-soot * 60);
+    r += blue * 26;
+    g += blue * 88;
+    b += blue * 200;
+  }
+
+  out[0] = r > 255 ? 255 : r;
+  out[1] = g > 255 ? 255 : g;
+  out[2] = b > 255 ? 255 : b;
+  return out;
+}
+
+class FlameRasteriser {
+  constructor(nx, ny) {
+    this.nx = nx;
+    this.ny = ny;
+    this.half = nx >> 1;
+    this.abel = new AbelProjector(this.half);
+    this.radial = [new Float32Array(this.half), new Float32Array(this.half), new Float32Array(this.half)];
+    this.proj = [new Float32Array(this.half), new Float32Array(this.half), new Float32Array(this.half)];
+    this.px = [0, 0, 0];
+  }
+
+  /**
+   * @param {object} field  the FlameField
+   * @param {Uint8ClampedArray} data  RGBA output, nx*ny*4, row 0 at the top
+   */
+  raster(field, data) {
+    const { nx, ny, half, radial, proj, px } = this;
+    const cx = half;
+    for (let j = 0; j < ny; j++) {
+      // Collapse the slice to a radial emission profile. Both halves of the
+      // row sample the same radii, so averaging them halves the noise.
+      for (let r = 0; r < half; r++) {
+        const iL = cx - 1 - r;
+        const iR = cx + r;
+        let R = 0, G = 0, B = 0;
+        if (iL >= 0) {
+          const k = iL + j * nx;
+          flamePixel(field.T[k], field.soot[k], field.rate[k], px);
+          R += px[0]; G += px[1]; B += px[2];
+        }
+        if (iR < nx) {
+          const k = iR + j * nx;
+          flamePixel(field.T[k], field.soot[k], field.rate[k], px);
+          R += px[0]; G += px[1]; B += px[2];
+        }
+        radial[0][r] = R * 0.5;
+        radial[1][r] = G * 0.5;
+        radial[2][r] = B * 0.5;
+      }
+      for (let c = 0; c < 3; c++) this.abel.project(radial[c], proj[c]);
+
+      const row = (ny - 1 - j) * nx * 4;   // grid j=0 is the wick, image y=0 is the top
+      for (let r = 0; r < half; r++) {
+        const R = toneMap(proj[0][r]), G = toneMap(proj[1][r]), B = toneMap(proj[2][r]);
+        for (const i of [cx - 1 - r, cx + r]) {
+          if (i < 0 || i >= nx) continue;
+          const o = row + i * 4;
+          data[o] = R; data[o + 1] = G; data[o + 2] = B; data[o + 3] = 255;
+        }
+      }
+    }
+  }
+}
+
+// ==================================================================
+// fluid.js
+// ==================================================================
+
+/**
+ * A buoyant reacting-flow solver on a staggered-free (collocated) grid.
+ *
+ * This is the heart of the app. A candle flame is a laminar buoyant diffusion
+ * flame: fuel vapour rises off the wick, mixes with air, burns in a thin
+ * sheet, and the hot products accelerate upward under buoyancy. The
+ * shear between that rising column and the still room air rolls up into a
+ * ring vortex that pinches the flame - and *that* pinching, shedding at
+ * 10-15 Hz, is what we perceive as flicker. It is not random jitter, which
+ * is why hand-animated flames never look right.
+ *
+ * Numerically this is Stam's stable-fluids scheme (SIGGRAPH 1999):
+ * semi-Lagrangian advection plus a Jacobi pressure projection, with the
+ * vorticity confinement of Fedkiw, Stam & Jensen (SIGGRAPH 2001) added back
+ * to compensate for the vorticity that the first-order advection dissipates.
+ *
+ * All fields are in SI units. Cell size `h` is in metres.
+ */
+
+
+/**
+ * Radius of the fuel source in cells at mid dial. A wick plus the ring of
+ * molten wax feeding it is a few millimetres across, which on this grid is
+ * about five cells.
+ */
+const WICK_CELLS = 5.0;
+
+/**
+ * Ceiling on the prescribed divergence, 1/s. The projection is solved with a
+ * fixed number of Jacobi sweeps, so an unbounded source can outrun it and
+ * blow the velocity field up.
+ */
+const EXPANSION_CLAMP = 260;
+
+/**
+ * How strongly gas-phase fuel outcompetes soot for the available oxygen.
+ * Attacking solid carbon is far slower than burning vapour, so even a little
+ * fuel vapour shields the soot around it.
+ */
+const SOOT_OXYGEN_COMPETITION = 40;
+
+/** Bilinear sample of a scalar field at continuous grid coordinates. */
+function sample(f, nx, ny, x, y) {
+  if (x < 0.5) x = 0.5; else if (x > nx - 1.5) x = nx - 1.5;
+  if (y < 0.5) y = 0.5; else if (y > ny - 1.5) y = ny - 1.5;
+  const i0 = x | 0, j0 = y | 0;
+  const i1 = i0 + 1, j1 = j0 + 1;
+  const sx = x - i0, sy = y - j0;
+  const a = f[i0 + j0 * nx], b = f[i1 + j0 * nx];
+  const c = f[i0 + j1 * nx], d = f[i1 + j1 * nx];
+  return (a + (b - a) * sx) * (1 - sy) + (c + (d - c) * sx) * sy;
+}
+
+class FlameField {
+  /**
+   * @param {number} nx  cells across
+   * @param {number} ny  cells up
+   * @param {number} h   cell size in metres
+   */
+  constructor(nx, ny, h) {
+    this.nx = nx;
+    this.ny = ny;
+    this.h = h;
+    const n = nx * ny;
+
+    this.u = new Float32Array(n);      // m/s, horizontal velocity
+    this.v = new Float32Array(n);      // m/s, vertical velocity (+ is up)
+    this.u0 = new Float32Array(n);
+    this.v0 = new Float32Array(n);
+
+    this.T = new Float32Array(n).fill(T_AMBIENT); // K
+    this.T0 = new Float32Array(n);
+    this.fuel = new Float32Array(n);   // paraffin vapour mass fraction
+    this.fuel0 = new Float32Array(n);
+    /**
+     * Oxygen, normalised so 1.0 is fresh room air.
+     *
+     * A candle is a diffusion flame: fuel and air arrive separately and can
+     * only burn where they meet. Tracking the oxygen explicitly is what
+     * confines the reaction to a sheet and leaves a cooler, sooty, fuel-rich
+     * core behind it, instead of a uniformly glowing blob.
+     */
+    this.ox = new Float32Array(n).fill(1);
+    this.ox0 = new Float32Array(n);
+    this.soot = new Float32Array(n);   // soot volume fraction (arbitrary units)
+    this.soot0 = new Float32Array(n);
+
+
+    // Local reaction rate, kept for rendering: the blue base of a candle
+    // flame is chemiluminescence from excited CH and C2 radicals in the
+    // reaction zone, not incandescence, so it has to be drawn from the
+    // reaction rate rather than from the temperature.
+    this.rate = new Float32Array(n);
+
+    /**
+     * Rate of volumetric expansion, 1/s.
+     *
+     * Burning gas gets about five times hotter, and a gas that gets five
+     * times hotter at constant pressure takes up five times the room. A
+     * strictly incompressible projection has no way to express that, so the
+     * plume necks down as buoyancy accelerates it instead of bulging out the
+     * way a real flame does. Feeding the heat release in as a prescribed
+     * divergence - the low-Mach formulation, div u = (1/T) DT/Dt - is what
+     * gives the flame its width.
+     */
+    this.expand = new Float32Array(n);
+
+    this.p = new Float32Array(n);
+    this.div = new Float32Array(n);
+    this.curl = new Float32Array(n);
+
+    // Tunables with physical meaning.
+    this.vorticityEps = 1.15;  // strength of vorticity confinement
+    this.fuelBase = 3.2;       // fuel supply with the wick trimmed right down
+    this.fuelRange = 2.2;      // extra supply at the top of the dial's range
+    this.burnRate = 55.0;      // 1/s, reaction rate once fuel and air have met
+    this.heatPerFuel = 7600;   // K per unit fuel fraction burnt
+    this.sootYield = 220;      // how fast soot approaches its loading, per unit fuel
+    this.sootMax = 0.32;       // saturated soot loading in a fully rich parcel
+    this.sootOxidation = 26;   // 1/s, soot burnout on the lean side of the sheet
+    this.coolingRate = 2.5;    // 1/s, loss beyond what diffusion already carries
+    this.radiativeCooling = 3.0e-11; // 1/(K^3 s), Stefan-Boltzmann-like loss
+    // Effective (eddy) diffusivity of the mixture fraction. The molecular
+    // value is the floor; a sub-millimetre grid cannot resolve the fine
+    // wrinkling of a real flame sheet, and raising the transport is the
+    // standard way to stand in for the mixing happening below the grid. It
+    // also sets flame height, since the flame closes over at the point where
+    // enough air has mixed in to bring Z down to stoichiometric.
+    this.wickCells = WICK_CELLS;
+    this.dOx = D_MASS * 2;
+    this.dFuel = D_MASS;
+    this.alphaThermal = ALPHA_THERMAL;
+    this.alphaMaxRatio = 1;    // ceiling on the T^1.75 enhancement, for compute
+    /**
+     * Scales the low-Mach expansion term. The physically exact value is 1,
+     * but a real flame sheet is a tenth of a millimetre thick and these cells
+     * are six tenths, so the reaction zone is badly unresolved: its expansion
+     * gets smeared across several cells and partly cancelled by the
+     * contraction of its neighbours. Measured against the ideal, roughly 40%
+     * of the true integrated expansion survives, so this is the sub-grid
+     * correction that restores it. It is the one parameter that reliably
+     * controls how wide the flame is.
+     */
+    this.expansionGain = 4.0;
+    this.jacobiIters = 8;
+
+    // Externally driven bulk air motion (draft, blowing, device tilt).
+    this.windX = 0;            // m/s
+    this.windY = 0;            // m/s
+  }
+
+  idx(i, j) { return i + j * this.nx; }
+
+  /**
+   * Inject fuel vapour and pilot heat at the wick.
+   *
+   * Fuel leaves a wick slowly - it is wicked up as liquid and boils off at a
+   * few millimetres per second. It is buoyancy, not any jet, that then
+   * accelerates it to metres per second. Injecting it with a large upward
+   * velocity produced a pencil-thin spike instead of a flame, because
+   * continuity necks a fast stream down as it speeds up.
+   *
+   * The width matters just as much: the flame is as wide as the region where
+   * fuel and air are meeting, so it is set by the wick and its pool of molten
+   * wax, not by a single grid cell.
+   *
+   * @param {number} strength  0..1, how far the dial is turned up
+   */
+  injectFuel(strength, dt) {
+    const { nx, fuel, T, v } = this;
+    const cx = nx / 2;
+    // The dial is a wick length. A longer wick exposes more surface, wicks up
+    // more molten wax and vaporises more of it, so it feeds a bigger flame -
+    // which is exactly how the wheel on an oil lamp works.
+    const radius = this.wickCells * (0.75 + 0.45 * strength);
+    const j0 = 1;
+    const j1 = Math.max(3, Math.round(radius * 2.6));
+    const r2 = radius * radius;
+    for (let j = j0; j <= j1; j++) {
+      for (let i = 1; i < nx - 1; i++) {
+        const dx = i - cx;
+        const d2 = dx * dx;
+        if (d2 > r2) continue;
+        const falloff = (1 - d2 / r2) * (1 - (j - j0) / (j1 - j0 + 1));
+        const k = i + j * nx;
+        fuel[k] += (this.fuelBase + this.fuelRange * strength) * falloff * dt;
+        // A lit wick glows at close to flame temperature whatever its length,
+        // and that is what keeps re-igniting the incoming vapour. Scaling
+        // this with the dial stopped low settings igniting at all.
+        T[k] = Math.max(T[k], T_AMBIENT + (780 + 240 * strength) * falloff);
+        // Vaporisation gives the gas only a gentle nudge upward; it is
+        // buoyancy, not any jet, that accelerates it to metres per second.
+        v[k] += 0.06 * falloff * dt * 60;
+      }
+    }
+  }
+
+  /** Buoyancy from the Boussinesq approximation: a = g (T - T_amb) / T_amb. */
+  applyBuoyancy(dt) {
+    const { nx, ny, T, v, u, soot } = this;
+    for (let j = 1; j < ny - 1; j++) {
+      for (let i = 1; i < nx - 1; i++) {
+        const k = i + j * nx;
+        const dT = T[k] - T_AMBIENT;
+        // Soot is heavy relative to hot air and drags the plume slightly.
+        v[k] += (G * (dT / T_AMBIENT) - 0.9 * soot[k]) * dt;
+        u[k] += this.windX * dt * 3.0;
+        v[k] += this.windY * dt * 3.0;
+      }
+    }
+  }
+
+  /**
+   * Vorticity confinement. Semi-Lagrangian advection is stable but heavily
+   * dissipative; without this the plume smooths into a featureless blob and
+   * the flicker dies out. Here we measure the vorticity that survived and
+   * push it back up along its own gradient.
+   */
+  applyVorticityConfinement(dt) {
+    const { nx, ny, u, v, curl, h } = this;
+    for (let j = 1; j < ny - 1; j++) {
+      for (let i = 1; i < nx - 1; i++) {
+        const k = i + j * nx;
+        curl[k] = ((v[k + 1] - v[k - 1]) - (u[k + nx] - u[k - nx])) / (2 * h);
+      }
+    }
+    const eps = this.vorticityEps;
+    for (let j = 2; j < ny - 2; j++) {
+      for (let i = 2; i < nx - 2; i++) {
+        const k = i + j * nx;
+        const gx = (Math.abs(curl[k + 1]) - Math.abs(curl[k - 1])) / (2 * h);
+        const gy = (Math.abs(curl[k + nx]) - Math.abs(curl[k - nx])) / (2 * h);
+        const len = Math.hypot(gx, gy) + 1e-8;
+        const nxc = gx / len, nyc = gy / len;
+        // N x omega, for the 2D case where omega points out of the plane.
+        u[k] += eps * h * (nyc * curl[k]) * dt;
+        v[k] -= eps * h * (nxc * curl[k]) * dt;
+      }
+    }
+  }
+
+  /**
+   * Explicit molecular diffusion, as a five-point Laplacian.
+   *
+   * Advection alone leaves oxygen to reach the flame only by being carried
+   * there, which starves the reaction zone between entrainment gusts and
+   * makes the flame thrash between roaring and nearly out. Real oxygen also
+   * diffuses, and including that is what gives a steady flame with a flicker
+   * riding on top instead of a flame fighting for its life.
+   *
+   * The stability limit for this scheme in 2D is D*dt/h^2 <= 1/4; with air's
+   * diffusivity of about 2e-5 m^2/s on a 0.7 mm grid at 2 ms per step we sit
+   * near 0.08, comfortably inside it. `scratch` avoids allocating per call.
+   */
+  diffuse(f, D, dt, cylindrical = true) {
+    const { nx, ny, h } = this;
+    const cx = nx / 2;
+    const k = (D * dt) / (h * h);
+    if (k <= 0) return;
+    // Split into as many passes as stability requires rather than silently
+    // clamping, so an effective diffusivity above the single-pass limit is
+    // still applied in full.
+    const passes = Math.max(1, Math.ceil(k / 0.2));
+    const a = k / passes;
+    if (!this.scratch) this.scratch = new Float32Array(nx * ny);
+    const s = this.scratch;
+    for (let n = 0; n < passes; n++) {
+      s.set(f);
+      for (let j = 1; j < ny - 1; j++) {
+        for (let i = 1; i < nx - 1; i++) {
+          const c = i + j * nx;
+          let lap = s[c - 1] + s[c + 1] + s[c - nx] + s[c + nx] - 4 * s[c];
+          if (cylindrical) {
+            // The grid is the (r, z) half plane of an axisymmetric flame, not
+            // a flat slice, so the Laplacian carries an extra (1/r) d/dr term.
+            // It is not a small correction: it is the difference between a
+            // planar plume, which dilutes slowly, and a round one, which
+            // spreads its fuel into ever more air as it rises. Without it the
+            // mixture fraction never falls to stoichiometric and the flame
+            // never closes over into a tip.
+            const side = i < cx ? -1 : 1;
+            const r = Math.max(0.5 * h, Math.abs(i + 0.5 - cx) * h);
+            lap += side * h * (s[c + 1] - s[c - 1]) / (2 * r);
+          }
+          f[c] = s[c] + a * lap;
+        }
+      }
+    }
+  }
+
+  /**
+   * Thermal diffusion with a temperature-dependent diffusivity.
+   *
+   * Air's thermal diffusivity is not a constant: alpha goes as T^1.75 at
+   * fixed pressure, so gas in the flame at 1500 K conducts heat away an order
+   * of magnitude faster than the room-temperature air around it. Using the
+   * room-temperature value everywhere left the reaction unable to spread
+   * sideways into fuel that was already sitting there unburnt, which is
+   * exactly what sets a diffusion flame's width - the fuel field spanned
+   * eleven cells while the hot zone spanned four.
+   *
+   * `alphaMaxRatio` caps the enhancement. That cap is a compute limit, not a
+   * physical one: the explicit scheme needs D*dt/h^2 <= 1/4, so an unbounded
+   * alpha would need dozens of sub-passes per step and would not hold frame
+   * rate on a phone.
+   */
+  diffuseHeat(dt) {
+    const { nx, ny, h, T } = this;
+    const alpha0 = this.alphaThermal;
+    const kMax = (alpha0 * this.alphaMaxRatio * dt) / (h * h);
+    if (kMax <= 0) return;
+    const passes = Math.max(1, Math.ceil(kMax / 0.2));
+
+    // alpha(T) is a power law, so it is cheaper to look it up than to call
+    // pow() once per cell per pass.
+    if (!this.alphaLUT || this.alphaLUTdt !== dt) {
+      const N = 128;
+      this.alphaLUT = new Float32Array(N);
+      for (let i = 0; i < N; i++) {
+        const Tc = T_AMBIENT + (T_ADIABATIC - T_AMBIENT) * (i / (N - 1));
+        const ratio = Math.min(this.alphaMaxRatio, Math.pow(Tc / T_AMBIENT, 1.75));
+        this.alphaLUT[i] = (alpha0 * ratio * dt) / (h * h) / passes;
+      }
+      this.alphaLUTdt = dt;
+      this.alphaLUTn = N;
+    }
+    const lut = this.alphaLUT;
+    const nLut = this.alphaLUTn - 1;
+    const invSpan = nLut / (T_ADIABATIC - T_AMBIENT);
+
+    if (!this.scratch) this.scratch = new Float32Array(nx * ny);
+    const s = this.scratch;
+    const cx = nx / 2;
+    for (let n = 0; n < passes; n++) {
+      s.set(T);
+      for (let j = 1; j < ny - 1; j++) {
+        for (let i = 1; i < nx - 1; i++) {
+          const c = i + j * nx;
+          let li = (s[c] - T_AMBIENT) * invSpan;
+          li = li < 0 ? 0 : (li > nLut ? nLut : li | 0);
+          const a = lut[li];
+          let lap = s[c - 1] + s[c + 1] + s[c - nx] + s[c + nx] - 4 * s[c];
+          const side = i < cx ? -1 : 1;
+          const r = Math.max(0.5 * h, Math.abs(i + 0.5 - cx) * h);
+          lap += side * h * (s[c + 1] - s[c - 1]) / (2 * r);
+          T[c] = s[c] + a * lap;
+        }
+      }
+    }
+  }
+
+  /** Semi-Lagrangian advection of a scalar or velocity component. */
+  advect(dst, src, dt) {
+    const { nx, ny, u, v, h } = this;
+    const scale = dt / h;
+    for (let j = 1; j < ny - 1; j++) {
+      for (let i = 1; i < nx - 1; i++) {
+        const k = i + j * nx;
+        const x = i - u[k] * scale;
+        const y = j - v[k] * scale;
+        dst[k] = sample(src, nx, ny, x, y);
+      }
+    }
+  }
+
+  /** Enforce incompressibility by projecting out the divergent part. */
+  project() {
+    const { nx, ny, u, v, p, div, h } = this;
+    const cx = nx / 2;
+    for (let j = 1; j < ny - 1; j++) {
+      for (let i = 1; i < nx - 1; i++) {
+        const k = i + j * nx;
+        // Solving grad^2 p = div u - S makes the corrected field carry the
+        // prescribed expansion S rather than being strictly divergence free.
+        //
+        // The divergence is the axisymmetric one. In cylindrical coordinates
+        //
+        //     div u = du/dr + u/r + dv/dz
+        //
+        // and that middle term is not optional here: it is largest close to
+        // the axis, which is exactly where the flame sits. Leaving it out
+        // under-counts how much room expanding gas needs as it moves off the
+        // centreline, so the plume necked down into a spike instead of
+        // bulging out into a flame.
+        // u/r has a removable singularity on the axis. By symmetry the
+        // radial velocity is zero there, and the limit of u/r is du/dr, so
+        // the axis cells use that instead. Clamping r to half a cell instead
+        // made this term reach hundreds of reciprocal seconds right where the
+        // flame sits, which flattened the sway the plume needs to shed
+        // vortices - the flame went dead steady.
+        const side = i < cx ? -1 : 1;
+        const rc = Math.abs(i + 0.5 - cx);
+        const radial = rc < 1
+          ? side * (u[k + 1] - u[k - 1]) / (2 * h)
+          : (side * u[k]) / (rc * h);
+        div[k] = -0.5 * h * ((u[k + 1] - u[k - 1]) + (v[k + nx] - v[k - nx]))
+                 - h * h * radial
+                 + h * h * this.expand[k];
+        p[k] = 0;
+      }
+    }
+    this.boundaryScalar(div);
+    this.boundaryScalar(p);
+    for (let it = 0; it < this.jacobiIters; it++) {
+      for (let j = 1; j < ny - 1; j++) {
+        for (let i = 1; i < nx - 1; i++) {
+          const k = i + j * nx;
+          p[k] = (div[k] + p[k - 1] + p[k + 1] + p[k - nx] + p[k + nx]) * 0.25;
+        }
+      }
+      this.boundaryScalar(p);
+    }
+    for (let j = 1; j < ny - 1; j++) {
+      for (let i = 1; i < nx - 1; i++) {
+        const k = i + j * nx;
+        u[k] -= 0.5 * (p[k + 1] - p[k - 1]) / h;
+        v[k] -= 0.5 * (p[k + nx] - p[k - nx]) / h;
+      }
+    }
+    this.boundaryVelocity();
+  }
+
+  /** Open sides and top, solid floor: Neumann everywhere except the floor. */
+  boundaryScalar(f) {
+    const { nx, ny } = this;
+    for (let j = 0; j < ny; j++) {
+      f[j * nx] = f[1 + j * nx];
+      f[nx - 1 + j * nx] = f[nx - 2 + j * nx];
+    }
+    for (let i = 0; i < nx; i++) {
+      f[i] = f[i + nx];
+      f[i + (ny - 1) * nx] = f[i + (ny - 2) * nx];
+    }
+  }
+
+  /**
+   * The open boundaries are fresh room air, so oxygen is replenished by
+   * entrainment across them. This is the supply that feeds the flame.
+   */
+  boundaryAir(f) {
+    const { nx, ny } = this;
+    for (let j = 0; j < ny; j++) {
+      f[j * nx] = 1;
+      f[nx - 1 + j * nx] = 1;
+    }
+    for (let i = 0; i < nx; i++) {
+      f[i] = f[i + nx];                       // wax surface: no flux
+      f[i + (ny - 1) * nx] = 1;
+    }
+  }
+
+  boundaryVelocity() {
+    const { nx, ny, u, v } = this;
+    for (let j = 0; j < ny; j++) {
+      // Free-slip sides so room air can be entrained into the plume.
+      u[j * nx] = u[1 + j * nx];
+      v[j * nx] = v[1 + j * nx];
+      u[nx - 1 + j * nx] = u[nx - 2 + j * nx];
+      v[nx - 1 + j * nx] = v[nx - 2 + j * nx];
+    }
+    for (let i = 0; i < nx; i++) {
+      // Floor is the wax surface: no flow through it.
+      u[i] = 0;
+      v[i] = 0;
+      u[i + (ny - 1) * nx] = u[i + (ny - 2) * nx];
+      v[i + (ny - 1) * nx] = Math.max(0, v[i + (ny - 2) * nx]); // outflow only
+    }
+  }
+
+  /**
+   * One-step combustion plus heat loss.
+   *
+   * Fuel burns wherever it is hot enough, releasing heat and soot. Soot then
+   * oxidises again in the hottest part of the flame - which is why a healthy
+   * candle produces almost no visible smoke, but a freshly blown-out one
+   * produces a lot: the soot survives once the reaction zone is gone.
+   */
+  react(dt) {
+    const { nx, ny, T, fuel, soot, ox, rate } = this;
+    const ignite = T_AMBIENT + 350;
+    let released = 0;
+
+    for (let j = 1; j < ny - 1; j++) {
+      for (let i = 1; i < nx - 1; i++) {
+        const k = i + j * nx;
+        const before = T[k];
+        const f = fuel[k];
+        const o = ox[k];
+        rate[k] *= 0.72;   // short persistence, so the blue zone is not strobed
+
+        if (f > 1e-5 && o > 1e-4 && T[k] > ignite) {
+          // Whichever of fuel or oxygen runs out first limits the reaction.
+          const limited = Math.min(f, o / STOICH_RATIO);
+          const burnt = limited * Math.min(1, this.burnRate * dt);
+          fuel[k] = f - burnt;
+          ox[k] = o - burnt * STOICH_RATIO;
+          // Heat release cannot push the gas past the adiabatic flame
+          // temperature; that ceiling is set by the chemistry, not by us.
+          T[k] = Math.min(T_ADIABATIC, T[k] + burnt * this.heatPerFuel);
+          rate[k] += burnt;
+          released += burnt;
+        }
+
+        // Soot forms by pyrolysis on the fuel-rich side of the flame sheet.
+        if (fuel[k] > 1e-4 && T[k] > T_SOOT_IGNITION) {
+          soot[k] += (this.sootMax - soot[k]) * fuel[k] * this.sootYield * dt;
+        }
+        if (soot[k] > 0) {
+          // Soot burns in whatever oxygen is left once the far faster
+          // gas-phase reaction has taken its share. Deep in the fuel-rich
+          // core almost none is left, so soot survives and the body of the
+          // flame glows; near the tip the fuel is spent, the leftover
+          // fraction rises sharply and the soot is consumed. That burnout is
+          // what tapers a flame to a point - and why a healthy candle does
+          // not smoke while a freshly blown-out one does.
+          const competing = STOICH_RATIO * fuel[k] * SOOT_OXYGEN_COMPETITION;
+          const leftover = ox[k] / (ox[k] + competing + 1e-6);
+          const base = T[k] > T_SOOT_IGNITION ? this.sootOxidation : 0.3;
+          soot[k] *= Math.max(0, 1 - base * leftover * dt);
+        }
+
+        // Convective loss plus a radiative term. Radiation scales steeply
+        // enough with temperature that it only bites in the hottest part,
+        // which is what makes the tip cooler than the adiabatic value.
+        const dT = T[k] - T_AMBIENT;
+        if (dT > 0) {
+          const rad = this.radiativeCooling * dT * dT * dT;
+          T[k] = T_AMBIENT + dT * Math.max(0, 1 - (this.coolingRate + rad) * dt);
+        }
+
+        // Net expansion over the step. Cooling contributes a contraction,
+        // which is equally real.
+        const growth = (T[k] - before) / (before * dt);
+        this.expand[k] = Math.max(-EXPANSION_CLAMP,
+                                  Math.min(EXPANSION_CLAMP, growth * this.expansionGain));
+      }
+    }
+    this.heatRelease = released;
+  }
+
+  /** Advance the whole system by dt seconds. */
+  step(dt) {
+    this.applyBuoyancy(dt);
+    this.applyVorticityConfinement(dt);
+    this.project();
+
+    this.u0.set(this.u);
+    this.v0.set(this.v);
+    this.advect(this.u, this.u0, dt);
+    this.advect(this.v, this.v0, dt);
+    this.boundaryVelocity();
+    this.project();
+
+    this.T0.set(this.T);
+    this.fuel0.set(this.fuel);
+    this.ox0.set(this.ox);
+    this.soot0.set(this.soot);
+    this.advect(this.T, this.T0, dt);
+    this.advect(this.fuel, this.fuel0, dt);
+    this.advect(this.ox, this.ox0, dt);
+    this.advect(this.soot, this.soot0, dt);
+    this.diffuseHeat(dt);
+    this.diffuse(this.fuel, this.dFuel, dt);
+    this.diffuse(this.ox, this.dOx, dt);
+    this.diffuse(this.soot, D_SOOT, dt);
+
+    this.boundaryScalar(this.T);
+    this.boundaryScalar(this.fuel);
+    this.boundaryScalar(this.soot);
+    this.boundaryAir(this.ox);
+
+    this.react(dt);
+  }
+
+  /** Total luminous emission, used to drive the room light and its flicker. */
+  emission() {
+    const { nx, ny, T, soot } = this;
+    let sum = 0;
+    for (let j = 1; j < ny - 1; j++) {
+      for (let i = 1; i < nx - 1; i++) {
+        const k = i + j * nx;
+        const dT = T[k] - T_SOOT_IGNITION;
+        if (dT > 0) sum += dT * Math.min(1, soot[k] * 4);
+      }
+    }
+    return sum;
+  }
+
+  /**
+   * Height of the *luminous* zone in metres.
+   *
+   * Not the same as the height of the hot gas: a column of hot combustion
+   * products rises well above a candle flame and is completely invisible.
+   * What you see is glowing soot, so that is what gets measured.
+   */
+  flameHeight() {
+    const { nx, ny, T, soot, h } = this;
+    for (let j = ny - 2; j >= 1; j--) {
+      for (let i = 1; i < nx - 1; i++) {
+        const k = i + j * nx;
+        if (T[k] > T_SOOT_IGNITION && soot[k] > 0.02) return j * h;
+      }
+    }
+    return 0;
+  }
+
+  reset() {
+    this.u.fill(0); this.v.fill(0);
+    this.T.fill(T_AMBIENT);
+    this.fuel.fill(0); this.soot.fill(0);
+    this.ox.fill(1);
+    this.rate.fill(0);
+    this.expand.fill(0);
+    this.p.fill(0);
+  }
+}
+
+// ==================================================================
+// wax.js
+// ==================================================================
+
+/**
+ * The candle body: burning, melting, the melt pool, and wax drips.
+ *
+ * The mechanism, following Faraday's 1861 lectures, is a capillary engine.
+ * The flame does not burn the candle from the top down. It melts a shallow
+ * pool of wax around the wick; the wick draws that liquid up by capillary
+ * action; the liquid vaporises at the flame and burns. So:
+ *
+ *  - Mass leaves the candle only through the wick, at a measured 0.105 g/min.
+ *  - The pool surface is liquid, so gravity keeps it level and flat.
+ *  - The outer rim stays below the melting point and remains solid, which is
+ *    why a burning candle hollows out into a crater with a standing wall.
+ *  - When the rim finally gets hot enough to give way, the pool overflows and
+ *    runs down the outside as a drip, cooling and thickening until it sets.
+ *
+ * Height therefore falls at dh/dt = mdot / (rho * A), which for a 44 mm pillar
+ * works out to a few millimetres per hour - real, but far too slow to watch.
+ * `timeScale` compresses that without changing any of the physics.
+ */
+
+
+/** Thermal conductivity of *liquid* paraffin, W/(m K). */
+const K_WAX_LIQUID = 0.15;
+/** Drips per second of candle time from a fully molten rim. */
+const DRIP_RATE = 0.006;
+/**
+ * Thickness of the wetting film a drip leaves behind it. A running drip is
+ * pinned by its contact line and is freezing against wax that sits below the
+ * melting point, so it behaves like a very thin film rather than a free bead -
+ * which is why real drips crawl at centimetres per second, not metres.
+ */
+const DRIP_FILM = 1.6e-4;
+
+/** Radial samples across the candle's top face. */
+const PROFILE_N = 41;
+
+/** Arrhenius viscosity of molten paraffin. Cold wax is thick wax. */
+function waxViscosity(T) {
+  return MU_WAX_REF * Math.exp(
+    MU_ARRHENIUS_E_OVER_R * (1 / Math.max(T, 250) - 1 / T_WAX_POOL)
+  );
+}
+
+class WaxBody {
+  constructor() {
+    this.reset();
+    // Real time per simulated second. A candle burning at true speed loses
+    // about 5 mm an hour, so watching it melt needs the clock sped up.
+    this.timeScale = 90;
+  }
+
+  reset() {
+    this.height = CANDLE_HEIGHT_0;   // m, height of the untouched outer wall
+    this.burnedMass = 0;             // kg consumed so far
+    this.wickExposed = WICK_EXPOSED; // m of wick standing proud of the pool
+    this.wickCarbon = 0;             // 0..1, how much the wick tip has charred
+    this.elapsed = 0;                // s of candle time
+
+    // Radial height profile of the top face, measured downward from
+    // `this.height`. Index 0 is the left edge, PROFILE_N-1 the right edge.
+    this.profile = new Float32Array(PROFILE_N);
+    this.nodeT = new Float32Array(PROFILE_N).fill(T_AMBIENT);
+    this.poolDepth = 0;              // m, depth of liquid at the centre
+
+    this.drips = [];                 // live, still-running drips
+    this.frozen = [];                // set solid on the outside of the candle
+  }
+
+  /** Signed radius of profile node i, in metres. Negative is left of centre. */
+  nodeRadius(i) {
+    return CANDLE_RADIUS * (2 * i / (PROFILE_N - 1) - 1);
+  }
+
+  /** Absolute height of profile node i, in metres from the candle's base. */
+  nodeHeight(i) {
+    return this.height - this.profile[i];
+  }
+
+  /** The lowest point of the melt pool - where the wick sits. */
+  centreHeight() {
+    return this.nodeHeight((PROFILE_N - 1) >> 1);
+  }
+
+  /**
+   * @param {number} dt         real seconds elapsed
+   * @param {number} intensity  0..1 from the dial
+   * @param {boolean} lit
+   */
+  update(dt, intensity, lit) {
+    const t = dt * this.timeScale;
+    this.elapsed += lit ? t : 0;
+
+    this.updateThermal(t, intensity, lit);
+    if (lit) this.consume(t, intensity);
+    this.levelPool(t);
+    this.updateDrips(dt);
+    this.updateWick(t, intensity, lit);
+  }
+
+  /**
+   * Heat flux from the flame down onto the wax face, and the resulting
+   * temperature of each radial node. Only a few percent of the flame's ~80 W
+   * makes it back into the wax; the rest radiates and convects away. The flux
+   * falls off with distance from the wick, which is what sets the pool radius.
+   */
+  updateThermal(t, intensity, lit) {
+    const power = lit ? HEAT_RELEASE * intensity * MELT_FEEDBACK_FRACTION : 0;
+    // Characteristic radius over which the flame heats the face.
+    // Characteristic radius over which the flame heats the face. It has to
+    // stay well inside the candle's own radius, or the whole top melts at
+    // once and there is never a solid rim to form a crater against.
+    const rq = 0.0022 + 0.0042 * intensity;
+    let liquidNodes = 0;
+
+    for (let i = 0; i < PROFILE_N; i++) {
+      const r = Math.abs(this.nodeRadius(i));
+      const shape = Math.exp(-(r * r) / (rq * rq));
+      // Nodes that sit deeper in the crater are shaded from the flame less
+      // and are surrounded by hot wax, so they run warmer.
+      const recess = 1 + 2.2 * (this.profile[i] / (this.poolDepth + 0.004));
+      const flux = power * shape * Math.min(2.2, recess);
+      // Equilibrium between that flux and loss to the surroundings.
+      const Teq = T_AMBIENT + flux * 2600;
+      const tau = 8.0; // s, thermal time constant of the wax face
+      this.nodeT[i] += (Math.min(Teq, T_WAX_POOL + 12) - this.nodeT[i]) * Math.min(1, t / tau);
+      if (this.nodeT[i] >= T_WAX_MELT) liquidNodes++;
+    }
+    this.poolRadius = CANDLE_RADIUS * (liquidNodes / PROFILE_N);
+  }
+
+  /**
+   * Burn wax. Mass leaves through the wick, and the volume it leaves behind
+   * is removed from the liquid part of the face.
+   */
+  consume(t, intensity) {
+    const mdot = MASS_BURN_RATE * intensity;
+    const dm = mdot * t;
+    this.burnedMass += dm;
+
+    // Which nodes are molten and can therefore give up mass? The profile
+    // spans a full diameter, so each radius appears twice; integrating the
+    // annulus 2*pi*r*dr over the whole strip and halving gives the disc area.
+    let liquidArea = 0;
+    const dr = (2 * CANDLE_RADIUS) / (PROFILE_N - 1);
+    for (let i = 0; i < PROFILE_N; i++) {
+      if (this.nodeT[i] >= T_WAX_MELT) {
+        liquidArea += dr * (2 * Math.PI * Math.abs(this.nodeRadius(i)) + dr) * 0.5;
+      }
+    }
+    if (liquidArea <= 0) {
+      // Nothing molten yet: the wick alone is burning, so erode just the centre.
+      const c = (PROFILE_N - 1) >> 1;
+      this.profile[c] += dm / (RHO_WAX * Math.PI * 0.002 * 0.002);
+      return;
+    }
+
+    // Volume removed, spread over the molten face.
+    const dV = dm / RHO_WAX;
+    const drop = dV / liquidArea;
+    for (let i = 0; i < PROFILE_N; i++) {
+      if (this.nodeT[i] >= T_WAX_MELT) this.profile[i] += drop;
+    }
+
+    // Depth of the liquid layer, from the quasi-steady Stefan balance at the
+    // melt front: the flux arriving at the surface conducts down through the
+    // liquid and supplies the latent heat of the front as it descends.
+    //
+    //     q = k (T_pool - T_melt) / delta  +  rho * L * dh/dt
+    //
+    // which rearranges to give the equilibrium layer thickness. It comes out
+    // at one to two millimetres, matching a real candle's shallow pool.
+    const area = Math.PI * CANDLE_RADIUS * CANDLE_RADIUS;
+    const q = (HEAT_RELEASE * MELT_FEEDBACK_FRACTION * intensity) / area;
+    const latent = RHO_WAX * HEAT_OF_FUSION_WAX * (mdot / (RHO_WAX * area));
+    const driving = Math.max(1, q - latent);
+    const eq = (K_WAX_LIQUID * (T_WAX_POOL - T_WAX_MELT)) / driving;
+    this.poolDepth += (Math.min(0.006, eq) - this.poolDepth) * Math.min(1, t / 20);
+  }
+
+  /**
+   * Liquid wax obeys gravity, so the molten part of the face relaxes to a
+   * level surface. Solid wax does not move at all. This is what carves the
+   * flat-bottomed crater with a standing rim.
+   */
+  levelPool(t) {
+    let sum = 0, n = 0;
+    for (let i = 0; i < PROFILE_N; i++) {
+      if (this.nodeT[i] >= T_WAX_MELT) { sum += this.profile[i]; n++; }
+    }
+    if (n === 0) return;
+    const level = sum / n;
+    const rate = Math.min(1, t * 1.5); // liquid levels quickly
+    for (let i = 0; i < PROFILE_N; i++) {
+      if (this.nodeT[i] >= T_WAX_MELT) {
+        this.profile[i] += (level - this.profile[i]) * rate;
+      }
+    }
+
+    // Once the melt front reaches the outer wall there is no solid rim left to
+    // contain the pool, and wax runs over the edge. How readily depends on how
+    // far past melting the rim has been driven.
+    for (const edge of [0, PROFILE_N - 1]) {
+      const superheat = this.nodeT[edge] - T_WAX_MELT;
+      if (superheat <= 0) continue;
+      const rate = DRIP_RATE * Math.min(1, superheat / 12);
+      if (Math.random() < rate * t) this.spawnDrip(edge === 0 ? -1 : 1);
+    }
+  }
+
+  /** A blob of molten wax goes over the rim. */
+  spawnDrip(side) {
+    if (this.drips.length > 14) return;
+    const top = this.height - this.profile[side < 0 ? 0 : PROFILE_N - 1];
+    this.drips.push({
+      // Azimuth around the candle, in radians from the face nearest the
+      // viewer. The renderer projects this onto the cylinder, so a drip is
+      // placed on the surface rather than floated over it. Biased towards the
+      // silhouette, which is where the rim gives way first.
+      theta: side * (0.55 + 0.45 * Math.random()) * (Math.PI / 2),
+      y: top,
+      startY: top,                            // where it went over the rim
+      vy: 0,
+      T: T_WAX_POOL,
+      mass: 2e-5 + Math.random() * 6e-5,      // kg, roughly 20-80 mg
+      radius: 0,
+      frozen: false,
+    });
+  }
+
+  /**
+   * Drips run down the outside of the candle. A rivulet on a wall reaches a
+   * terminal velocity where gravity balances viscous shear,
+   *
+   *     v = rho g delta^2 / (3 mu)
+   *
+   * with film thickness delta. Because mu climbs steeply as the drip cools,
+   * the drip visibly decelerates on the way down and then sets solid - which
+   * is exactly what a real candle's drips do.
+   */
+  updateDrips(dt) {
+    const t = dt * this.timeScale;
+    const baseline = 0;
+    for (const d of this.drips) {
+      // Newtonian cooling towards room temperature.
+      d.T = T_AMBIENT + (d.T - T_AMBIENT) * Math.exp(-t / WAX_COOLING_TAU);
+      // A bigger drip is a thicker film and runs faster.
+      d.radius = Math.cbrt((3 * d.mass) / (4 * Math.PI * RHO_WAX));
+      const delta = DRIP_FILM * (0.7 + 0.6 * (d.radius / 2e-3));
+      const mu = waxViscosity(d.T);
+      const vTerm = (RHO_WAX * G * delta * delta) / (3 * mu);
+      d.vy += ((-vTerm) - d.vy) * Math.min(1, t * 6);
+      d.y += d.vy * t;
+
+      if (d.T <= T_WAX_MELT || Math.abs(d.vy) < 2e-5) {
+        d.frozen = true;
+      }
+      if (d.y <= baseline) { d.y = baseline; d.frozen = true; }
+    }
+    // Move set drips onto the static list so they stop being integrated.
+    for (let i = this.drips.length - 1; i >= 0; i--) {
+      if (this.drips[i].frozen) this.frozen.push(...this.drips.splice(i, 1));
+    }
+    // A drip is reclaimed once the melt line descends past it.
+    const top = this.height - this.profile[0];
+    for (let i = this.frozen.length - 1; i >= 0; i--) {
+      if (this.frozen[i].y > top) this.frozen.splice(i, 1);
+    }
+    if (this.frozen.length > 60) this.frozen.splice(0, this.frozen.length - 60);
+  }
+
+  /**
+   * The wick. It chars as it burns and curls over into the oxygen-rich outer
+   * edge of the flame, where the carbon is consumed - which is how a candle
+   * self-trims. If it grows too long it mushrooms and the flame starts to
+   * smoke, so the length settles into an equilibrium.
+   */
+  updateWick(t, intensity, lit) {
+    const pool = this.centreHeight();
+    const target = 0.004 + 0.004 * (1 - intensity);
+    if (lit) {
+      this.wickExposed += (target - this.wickExposed) * Math.min(1, t / 25);
+      this.wickCarbon = Math.min(1, this.wickCarbon + t * 0.02);
+    }
+    this.wickTop = pool + this.wickExposed;
+  }
+
+  /** Fraction of the original candle left, for the UI. */
+  remaining() {
+    return Math.max(0, this.centreHeight() / CANDLE_HEIGHT_0);
+  }
+}
+
+// ==================================================================
+// air.js
+// ==================================================================
+
+/**
+ * Air movement: the room's own draft, the phone's motion, and you blowing
+ * on the microphone.
+ *
+ * Blowing a candle out is not about "enough wind". A flame is a balance
+ * between the rate at which the chemistry can release heat and the rate at
+ * which the flow carries that heat away - the ratio of the two is the
+ * Damkohler number. Stretch the flame past a critical strain rate, roughly
+ * 150-200 per second for a hydrocarbon diffusion flame, and the reaction
+ * cannot keep up with its own losses, so it detaches from the wick and dies.
+ * That is why a sharp puff works and steady breathing does not.
+ */
+
+
+class AirModel {
+  constructor() {
+    this.draftX = 0;
+    this.draftY = 0;
+    this.tiltX = 0;
+    this.blow = 0;          // 0..1, current blow strength from the mic
+    this.strain = 0;        // 1/s, strain rate experienced by the flame
+    this.extinguishFor = 0; // s, how long we have been past the critical strain
+    this.micReady = false;
+    this.micError = null;
+    this.enabled = true;
+  }
+
+  /**
+   * The ambient draft is modelled as an Ornstein-Uhlenbeck process: a random
+   * walk that is pulled back towards zero. That gives air motion which
+   * wanders on a realistic timescale instead of jittering every frame, and it
+   * is what makes an untouched flame lean and recover on its own.
+   */
+  update(dt) {
+    // Guard the timestep: exp() of a positive exponent gives a > 1, and the
+    // sqrt below would then take the root of a negative number.
+    if (!(dt > 0)) return;
+    const a = Math.exp(-dt / DRAFT_TAU);
+    const noise = Math.sqrt(1 - a * a) * DRAFT_SIGMA;
+    this.draftX = this.draftX * a + (Math.random() * 2 - 1) * noise * 1.7;
+    this.draftY = this.draftY * a + (Math.random() * 2 - 1) * noise * 0.6;
+
+    if (this.analyser) this.sampleMic();
+    else this.blow *= Math.exp(-dt / 0.25);
+
+    const u = Math.abs(this.windX()) ;
+    // Strain rate seen by the flame is the velocity difference across it.
+    this.strain = u / (FLAME_DIAMETER * 0.5);
+    if (this.strain > EXTINCTION_STRAIN) this.extinguishFor += dt;
+    else this.extinguishFor = Math.max(0, this.extinguishFor - dt * 2.5);
+  }
+
+  windX() {
+    return this.draftX + this.tiltX + this.blow * BLOW_VELOCITY_MAX;
+  }
+
+  windY() {
+    return this.draftY;
+  }
+
+  /** True once the flame has been over-strained long enough to detach. */
+  shouldExtinguish() {
+    return this.extinguishFor > 0.045;
+  }
+
+  /**
+   * Blowing produces a broadband rush of air noise across the microphone
+   * membrane, concentrated well below 500 Hz and quite unlike speech or
+   * music, which have structure higher up. Comparing the two bands separates
+   * a real puff from someone talking near the phone.
+   */
+  async enableMic() {
+    if (this.analyser) return true;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,   // noise suppression removes exactly the
+          autoGainControl: false,    // signal we are looking for
+        },
+      });
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      this.audioCtx = this.audioCtx || new Ctx();
+      const src = this.audioCtx.createMediaStreamSource(stream);
+      const analyser = this.audioCtx.createAnalyser();
+      analyser.fftSize = 1024;
+      analyser.smoothingTimeConstant = 0.35;
+      src.connect(analyser);
+      this.analyser = analyser;
+      this.stream = stream;
+      this.bins = new Float32Array(analyser.frequencyBinCount);
+      this.micReady = true;
+      return true;
+    } catch (err) {
+      this.micError = err && err.name ? err.name : 'unavailable';
+      return false;
+    }
+  }
+
+  disableMic() {
+    if (this.stream) for (const t of this.stream.getTracks()) t.stop();
+    this.stream = null;
+    this.analyser = null;
+    this.micReady = false;
+    this.blow = 0;
+  }
+
+  sampleMic() {
+    const a = this.analyser;
+    a.getFloatFrequencyData(this.bins);
+    const nyquist = this.audioCtx.sampleRate / 2;
+    const binHz = nyquist / this.bins.length;
+    const lowMax = Math.floor(450 / binHz);
+    const highMin = Math.floor(1200 / binHz);
+
+    let low = 0, lowN = 0, high = 0, highN = 0;
+    for (let i = 2; i < this.bins.length; i++) {
+      const db = this.bins[i];
+      const lin = db < -110 ? 0 : Math.pow(10, db / 20);
+      if (i <= lowMax) { low += lin; lowN++; }
+      else if (i >= highMin) { high += lin; highN++; }
+    }
+    low = lowN ? low / lowN : 0;
+    high = highN ? high / highN : 0;
+
+    // A puff is loud low down and comparatively quiet up top.
+    const ratio = low / (high + 1e-6);
+    const level = Math.max(0, (low - 0.0016) * 240);
+    const isBreath = ratio > 2.2 ? 1 : Math.max(0, (ratio - 1.1) / 1.1);
+    const target = Math.min(1, level * isBreath);
+    // Rise fast, fall slowly: a flame keeps moving after the puff stops.
+    this.blow += (target - this.blow) * (target > this.blow ? 0.55 : 0.10);
+  }
+
+  /** Tilting the phone drags the air across the flame. */
+  attachTilt() {
+    if (this._tiltBound) return;
+    this._tiltBound = (e) => {
+      const gamma = e.gamma || 0;               // left-right tilt, degrees
+      this.tiltX = Math.max(-0.9, Math.min(0.9, gamma / 45)) * 0.32;
+    };
+    window.addEventListener('deviceorientation', this._tiltBound, true);
+  }
+}
+
+// ==================================================================
+// audio.js
+// ==================================================================
+
+/**
+ * Wick crackle, synthesised rather than sampled.
+ *
+ * A burning wick makes two sounds: a broad low hiss from the convective
+ * plume, and sharp irregular ticks as trapped moisture and impurities in the
+ * wick flash to vapour. The ticks arrive as a Poisson process - independent
+ * events at a roughly constant average rate - so they are generated that way
+ * here instead of being looped. A loop of any length eventually becomes
+ * recognisable, which ruins the illusion faster than anything visual.
+ *
+ * Synthesising it also keeps the app tiny: no audio assets to ship.
+ */
+
+class Crackle {
+  constructor() {
+    this.ctx = null;
+    this.on = false;
+    this.level = 0;
+  }
+
+  start() {
+    if (this.ctx) { this.resume(); return; }
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    const ctx = new Ctx();
+    this.ctx = ctx;
+
+    this.master = ctx.createGain();
+    this.master.gain.value = 0;
+    this.master.connect(ctx.destination);
+
+    // Two seconds of white noise, looped, is the source for everything.
+    const n = ctx.sampleRate * 2;
+    const buf = ctx.createBuffer(1, n, ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+    this.noise = buf;
+
+    // The steady plume hiss: noise rolled off hard at the top.
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 720;
+    lp.Q.value = 0.6;
+    this.hissGain = ctx.createGain();
+    this.hissGain.gain.value = 0.055;
+    src.connect(lp).connect(this.hissGain).connect(this.master);
+    src.start();
+    this.hissSrc = src;
+
+    this.on = true;
+    this.schedule();
+  }
+
+  /** One tick: a very short band-passed noise burst with a fast decay. */
+  pop(when, strength) {
+    const ctx = this.ctx;
+    const src = ctx.createBufferSource();
+    src.buffer = this.noise;
+    src.loop = true;
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = 900 + Math.random() * 2600;
+    bp.Q.value = 1.4 + Math.random() * 5;
+    const g = ctx.createGain();
+    const peak = 0.06 + Math.random() * 0.22 * strength;
+    const dur = 0.012 + Math.random() * 0.055;
+    g.gain.setValueAtTime(0, when);
+    g.gain.linearRampToValueAtTime(peak, when + 0.0016);
+    g.gain.exponentialRampToValueAtTime(0.0001, when + dur);
+    src.connect(bp).connect(g).connect(this.master);
+    src.start(when);
+    src.stop(when + dur + 0.02);
+  }
+
+  /**
+   * Schedule the next batch of ticks. Poisson arrivals mean the gap between
+   * events is exponentially distributed, so we just draw the gaps.
+   */
+  schedule() {
+    if (!this.ctx || !this.on) return;
+    const ctx = this.ctx;
+    const horizon = 0.6;
+    let t = Math.max(ctx.currentTime, this.nextAt || ctx.currentTime);
+    const rate = 1.4 + this.level * 5.5;      // ticks per second
+    while (t < ctx.currentTime + horizon) {
+      t += -Math.log(1 - Math.random()) / rate;
+      if (t > ctx.currentTime) this.pop(t, 0.4 + this.level);
+    }
+    this.nextAt = t;
+    this.timer = setTimeout(() => this.schedule(), 400);
+  }
+
+  /** Track the flame: louder and busier as the dial goes up. */
+  setLevel(level, lit) {
+    this.level = level;
+    if (!this.ctx) return;
+    const target = lit ? 0.10 + level * 0.55 : 0;
+    this.master.gain.setTargetAtTime(target, this.ctx.currentTime, 0.25);
+    if (this.hissGain) {
+      this.hissGain.gain.setTargetAtTime(0.03 + level * 0.06, this.ctx.currentTime, 0.3);
+    }
+  }
+
+  resume() { if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume(); }
+
+  stop() {
+    if (!this.ctx) return;
+    this.on = false;
+    clearTimeout(this.timer);
+    this.master.gain.setTargetAtTime(0, this.ctx.currentTime, 0.2);
+    setTimeout(() => {
+      if (this.on) return;
+      try { this.hissSrc.stop(); } catch (e) { /* already stopped */ }
+      this.ctx.close();
+      this.ctx = null;
+    }, 700);
+  }
+}
+
+// ==================================================================
+// renderer.js
+// ==================================================================
+
+/**
+ * Rendering. Everything drawn here is driven by the simulation state; there
+ * are no keyframes and no hand-authored flame shape anywhere in this file.
+ *
+ * The layer order mirrors how the light physically arrives at your eye:
+ *
+ *   1. the light the flame throws into the room, falling off as 1/r^2
+ *   2. the surface the candle stands on, lit by that light
+ *   3. the wax body, lit from above and glowing from within where the flame
+ *      heats it (paraffin is translucent - Beer-Lambert through ~6 mm)
+ *   4. the molten pool and the charred wick
+ *   5. the flame itself, as blackbody emission from soot plus the blue
+ *      chemiluminescent reaction zone at its base
+ *   6. bloom, which is what the eye and the camera both do with a source
+ *      this much brighter than its surroundings
+ */
+
+
+
+
+
+const ROOM_RGB = blackbodyRGB(T_COLOR_ROOM).map((c) => Math.round(255 * encodeSrgb(c)));
+
+/** Diffuse reflectance of unlit paraffin: a warm off-white, not a neutral one. */
+const WAX_ALBEDO = [0.96, 0.91, 0.80];
+
+/** Vertical squash of the top-face ellipse: we look slightly down on the candle. */
+const TILT = 0.19;
+/** Beer-Lambert attenuation length of light inside paraffin, metres. */
+const WAX_SCATTER_LENGTH = 0.006;
+/**
+ * Emission from the solver that corresponds to a fully lit scene. Measured
+ * from the solver itself with tools/calibrate.mjs rather than guessed.
+ */
+const EMISSION_REF = 20000;
+
+/**
+ * Converts illuminance in the model's units to screen alpha. Set so a candle
+ * at full tilt lights its immediate surroundings strongly and falls to almost
+ * nothing by the edge of the frame, which is roughly what one candle does to
+ * a dark room.
+ */
+const ROOM_LIGHT_GAIN = 7.5e-4;
+
+class Renderer {
+  constructor(canvas, field, wax) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d', { alpha: false });
+    this.field = field;
+    this.wax = wax;
+
+    // Flame is composited from a buffer at simulation resolution.
+    this.flameBuf = document.createElement('canvas');
+    this.flameBuf.width = field.nx;
+    this.flameBuf.height = field.ny;
+    this.flameCtx = this.flameBuf.getContext('2d');
+    this.flameImg = this.flameCtx.createImageData(field.nx, field.ny);
+    this.raster = new FlameRasteriser(field.nx, field.ny);
+
+    // Half-resolution intermediate. Upscaling in two bilinear steps is much
+    // smoother than one big jump, and gives the bloom pass something cheap
+    // to blur.
+    this.mid = document.createElement('canvas');
+    this.midCtx = this.mid.getContext('2d');
+
+    this.dpr = 1;
+    this.smoothed = 0;   // low-passed emission, drives the room light
+    this.resize();
+  }
+
+  /**
+   * Perceived brightness of the scene, 0..~1.3.
+   *
+   * The solver's emission swings over roughly a 40:1 range between the
+   * bottom and top of the dial, but perceived lightness is not proportional
+   * to luminance. CIE L* is a cube root of relative luminance, and using
+   * that here is what makes the dial feel linear under the hand while the
+   * underlying radiometry stays honest.
+   */
+  luminance() {
+    return Math.min(1.45, Math.cbrt(Math.max(0, this.smoothed) / EMISSION_REF));
+  }
+
+  resize() {
+    const c = this.canvas;
+    this.dpr = Math.min(2, window.devicePixelRatio || 1);
+    const w = Math.round(c.clientWidth * this.dpr);
+    const h = Math.round(c.clientHeight * this.dpr);
+    if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+    this.w = w;
+    this.h = h;
+
+    // Metres of world visible vertically. The candle plus its flame is about
+    // 17 cm, so showing ~34 cm frames it with room to breathe.
+    this.viewHeight = 0.34;
+    this.scale = h / this.viewHeight;            // pixels per metre
+    this.baseY = h * 0.93;                       // where the candle stands
+    this.cx = w / 2;
+
+    this.mid.width = Math.max(64, Math.round(this.field.nx * 4));
+    this.mid.height = Math.max(64, Math.round(this.field.ny * 4));
+  }
+
+  /** World metres (x from candle centre, y up from the base) to canvas pixels. */
+  px(x) { return this.cx + x * this.scale; }
+  py(y) { return this.baseY - y * this.scale; }
+
+  draw(state) {
+    const { ctx, w, h } = this;
+    const emission = this.field.emission();
+    // The room light must not strobe on single-frame noise, but it does have
+    // to carry the flame's real flicker, so smooth it only lightly.
+    this.smoothed += (emission - this.smoothed) * 0.35;
+
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, w, h);
+
+    this.drawRoomLight(state);
+    this.drawGround(state);
+    this.drawCandle(state);
+    this.drawPoolAndWick(state);
+    this.drawFlame(state);
+    this.drawSmoke(state);
+    this.drawVignette();
+  }
+
+  /**
+   * Light thrown into the room. A candle is, by the historical definition of
+   * the unit, about one candela; illuminance falls off as 1/r^2, so the
+   * gradient stops are placed on that curve rather than eyeballed.
+   */
+  drawRoomLight(state) {
+    const { ctx, w, h } = this;
+    const wick = this.wax.wickTop || 0;
+    const fx = this.px(0);
+    const fy = this.py(wick + 0.018);
+
+    const lum = this.luminance() * LUMINOUS_INTENSITY;
+    if (lum <= 0.001) return;
+
+    const reach = Math.max(w, h) * 1.25;
+    const g = ctx.createRadialGradient(fx, fy, 0, fx, fy, reach);
+    const [r, gr, b] = ROOM_RGB;
+
+    // A candle flame is not a point. It is a luminous column some four
+    // centimetres tall, and close in - within a flame height or so - its
+    // illuminance falls off roughly as 1/d rather than 1/d^2. Treating it as
+    // a point put a hard bright disc on the screen with a visible edge where
+    // the inverse square curve fell off a cliff. Using
+    //
+    //     E = I / (d * (d + L))
+    //
+    // recovers 1/d near the flame and the correct 1/d^2 far away, with the
+    // crossover at the flame's own height, which is what a real candle's
+    // pool of light looks like.
+    const L = FLAME_HEIGHT;
+    const STOPS = 24;
+    // Gradient position maps to true distance in metres, so the falloff drawn
+    // on screen is the falloff the model describes rather than a curve fitted
+    // to the viewport.
+    const span = reach / this.scale;
+    for (let i = 0; i <= STOPS; i++) {
+      const s = i / STOPS;
+      const d = 0.012 + s * span;                      // metres from the flame
+      const e = lum / (d * (d + L));
+      const a = Math.min(0.62, e * ROOM_LIGHT_GAIN);
+      g.addColorStop(s, `rgba(${r}, ${gr}, ${b}, ${a.toFixed(4)})`);
+    }
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, h);
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  /** The surface the candle stands on, plus its contact shadow. */
+  drawGround(state) {
+    const { ctx, w } = this;
+    const y = this.baseY;
+    const lum = this.luminance();
+    const rPx = CANDLE_RADIUS * this.scale;
+
+    // Soft pool of light on the table.
+    const g = ctx.createRadialGradient(this.cx, y, rPx * 0.4, this.cx, y, rPx * 9);
+    const [r, gr, b] = ROOM_RGB;
+    g.addColorStop(0, `rgba(${r}, ${gr}, ${b}, ${(0.30 * lum).toFixed(3)})`);
+    g.addColorStop(0.35, `rgba(${r}, ${gr}, ${b}, ${(0.10 * lum).toFixed(3)})`);
+    g.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.save();
+    ctx.translate(0, y);
+    ctx.scale(1, TILT * 1.6);
+    ctx.translate(0, -y);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, y - rPx * 9, w, rPx * 18);
+    ctx.restore();
+    ctx.globalCompositeOperation = 'source-over';
+
+    // Contact shadow directly under the candle.
+    const sh = ctx.createRadialGradient(this.cx, y, 0, this.cx, y, rPx * 1.9);
+    sh.addColorStop(0, 'rgba(0, 0, 0, 0.85)');
+    sh.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    ctx.save();
+    ctx.translate(0, y);
+    ctx.scale(1, TILT);
+    ctx.translate(0, -y);
+    ctx.fillStyle = sh;
+    ctx.fillRect(this.cx - rPx * 2, y - rPx * 2, rPx * 4, rPx * 4);
+    ctx.restore();
+  }
+
+  /** Outline of the wax body, used both to fill and to clip. */
+  bodyPath(ctx) {
+    const wax = this.wax;
+    const rPx = CANDLE_RADIUS * this.scale;
+    const leftTop = this.py(wax.nodeHeight(0));
+    const rightTop = this.py(wax.nodeHeight(PROFILE_N - 1));
+    const base = this.baseY;
+
+    ctx.beginPath();
+    ctx.moveTo(this.cx - rPx, leftTop);
+    ctx.lineTo(this.cx - rPx, base);
+    // The bottom of the candle is an ellipse too, seen from the same angle.
+    ctx.ellipse(this.cx, base, rPx, rPx * TILT, 0, Math.PI, 0, true);
+    ctx.lineTo(this.cx + rPx, rightTop);
+    ctx.ellipse(this.cx, rightTop, rPx, rPx * TILT, 0, 0, Math.PI, true);
+    ctx.closePath();
+  }
+
+  drawCandle(state) {
+    const { ctx } = this;
+    const wax = this.wax;
+    const rPx = CANDLE_RADIUS * this.scale;
+    const topY = this.py(wax.nodeHeight(0));
+    const lum = this.luminance();
+
+    ctx.save();
+    this.bodyPath(ctx);
+    ctx.clip();
+
+    // Cylinder shading. The body is lit from a point source directly above,
+    // so brightness follows the surface normal turning away from the axis and
+    // then falls off down the length of the candle.
+    const g = ctx.createLinearGradient(this.cx - rPx, 0, this.cx + rPx, 0);
+    const shade = (t) => {
+      // t is -1..1 across the diameter; the surface normal's horizontal
+      // component is t, so the Lambert term goes as sqrt(1 - t^2).
+      const n = Math.sqrt(Math.max(0, 1 - t * t));
+      const v = 0.10 + 0.62 * Math.pow(n, 0.85);
+      return v;
+    };
+    // Unlit paraffin is a warm off-white, and the only light falling on it
+    // comes from a 1850 K flame. Shading it with neutral greys made it read
+    // as grey plastic; multiplying the wax's own albedo by the colour of the
+    // light actually illuminating it is what makes it read as wax.
+    for (let i = 0; i <= 10; i++) {
+      const s = i / 10;
+      const v = shade(s * 2 - 1) * lum;
+      const c = WAX_ALBEDO.map((a, ch) =>
+        Math.round(255 * Math.min(1, v * a * (0.45 + 0.55 * ROOM_RGB[ch] / 255))));
+      g.addColorStop(s, `rgb(${c[0]}, ${c[1]}, ${c[2]})`);
+    }
+    ctx.fillStyle = g;
+    this.bodyPath(ctx);
+    ctx.fill();
+
+    // Vertical falloff: the far end of the candle is further from the flame.
+    const vg = ctx.createLinearGradient(0, topY, 0, this.baseY);
+    vg.addColorStop(0, 'rgba(0, 0, 0, 0)');
+    vg.addColorStop(0.45, 'rgba(0, 0, 0, 0.35)');
+    vg.addColorStop(1, 'rgba(0, 0, 0, 0.80)');
+    ctx.fillStyle = vg;
+    ctx.fillRect(this.cx - rPx, topY, rPx * 2, this.baseY - topY + 2);
+
+    // Subsurface scattering. Paraffin is translucent, so light from the flame
+    // enters the wax near the top and is attenuated with depth following
+    // Beer-Lambert with an attenuation length of about 6 mm. This is the
+    // warm internal glow that distinguishes real wax from painted plastic.
+    const depth = WAX_SCATTER_LENGTH * this.scale;
+    const sg = ctx.createLinearGradient(0, topY - depth * 0.5, 0, topY + depth * 5);
+    for (let i = 0; i <= 6; i++) {
+      const s = i / 6;
+      const a = Math.exp(-s * 5 * 0.85) * 0.55 * lum;
+      sg.addColorStop(s, `rgba(255, 168, 84, ${a.toFixed(3)})`);
+    }
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = sg;
+    ctx.fillRect(this.cx - rPx, topY - depth, rPx * 2, depth * 7);
+    ctx.globalCompositeOperation = 'source-over';
+
+    this.drawDrips(ctx, rPx, lum);
+    ctx.restore();
+
+    // A soft rim on the lit side so the silhouette does not read as a cutout.
+    ctx.save();
+    this.bodyPath(ctx);
+    ctx.clip();
+    const rim = ctx.createLinearGradient(this.cx - rPx, 0, this.cx - rPx * 0.55, 0);
+    rim.addColorStop(0, `rgba(255, 190, 120, ${(0.22 * lum).toFixed(3)})`);
+    rim.addColorStop(1, 'rgba(255, 190, 120, 0)');
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = rim;
+    ctx.fillRect(this.cx - rPx, topY, rPx, this.baseY - topY);
+    ctx.restore();
+  }
+
+  /** Live and set drips running down the outside of the candle. */
+  drawDrips(ctx, rPx, lum) {
+    const all = this.wax.frozen.concat(this.wax.drips);
+    for (const d of all) {
+      // Project the drip's azimuth onto the cylinder. A drip sits *on* the
+      // surface, so its screen position is R sin(theta), and the surface
+      // turns away from the viewer as |theta| grows.
+      const st = Math.sin(d.theta);
+      const ct = Math.abs(Math.cos(d.theta));
+      const x = this.cx + rPx * st;
+      const rad = Math.max(1.2, d.radius * this.scale);
+      // Seen from the side, a drip near the silhouette is viewed edge-on and
+      // so looks narrower than one facing the viewer.
+      const wide = rad * Math.max(0.35, ct);
+
+      const y = this.py(d.y);
+      const top = this.py(d.startY);
+
+      // Same Lambert term the body uses, so a drip on the turned-away part of
+      // the cylinder is shaded like the wax it is sitting on instead of
+      // glowing white against it.
+      const shade = lum * (0.14 + 0.62 * Math.pow(ct, 0.85));
+      const wax = (r, g, b, a = 1) =>
+        `rgba(${Math.round(r * shade)}, ${Math.round(g * shade)}, ${Math.round(b * shade)}, ${a})`;
+
+      // The trail it has left behind, standing slightly proud of the wall.
+      if (top < y - 0.5) {
+        ctx.beginPath();
+        ctx.moveTo(x, top);
+        ctx.lineTo(x, y);
+        ctx.lineWidth = wide * 1.35;
+        ctx.lineCap = 'round';
+        ctx.strokeStyle = wax(228, 208, 174, 0.92);
+        ctx.stroke();
+      }
+
+      // The bead at the leading edge. A running drip is drawn out into a
+      // teardrop by its own motion; one that has set is round again.
+      const speed = Math.min(1, Math.abs(d.vy) / 0.02);
+      const tall = wide * (1.25 + speed * 1.6);
+      const g = ctx.createRadialGradient(x - wide * 0.3, y - tall * 0.35, 0, x, y, tall * 1.3);
+      g.addColorStop(0, wax(255, 247, 230, 0.98));
+      g.addColorStop(0.5, wax(233, 212, 178));
+      g.addColorStop(1, wax(146, 126, 98, 0.7));
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.ellipse(x, y, wide * 1.1, tall, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  /** The molten pool in the crater, and the charred wick standing in it. */
+  drawPoolAndWick(state) {
+    const { ctx } = this;
+    const wax = this.wax;
+    const rPx = CANDLE_RADIUS * this.scale;
+    const lum = this.luminance();
+
+    // The top face is a crater: a standing rim of wax that never got hot
+    // enough to melt, and inside it a pool that has sunk as the wick burned
+    // its way down. Both are ellipses because we are looking slightly down on
+    // the candle, and the gap between them is the crater wall.
+    const rimY = this.py(wax.nodeHeight(0));
+    const poolY = this.py(wax.centreHeight());
+    const poolR = Math.max(rPx * 0.18, wax.poolRadius * this.scale);
+
+    // Rim: the solid ring of wax, lit from directly above by the flame.
+    const rimShade = (t) => 0.16 + 0.70 * Math.pow(Math.sqrt(Math.max(0, 1 - t * t)), 0.8);
+    const rg = ctx.createLinearGradient(this.cx - rPx, 0, this.cx + rPx, 0);
+    for (let i = 0; i <= 8; i++) {
+      const s = i / 8;
+      const v = rimShade(s * 2 - 1) * lum;
+      // Same rule as the body: the wax's own albedo times the colour of the
+      // light falling on it. Neutral greys here read as a metal ring.
+      const c = WAX_ALBEDO.map((a, ch) =>
+        Math.round(255 * Math.min(1, v * a * (0.45 + 0.55 * ROOM_RGB[ch] / 255))));
+      rg.addColorStop(s, `rgb(${c[0]}, ${c[1]}, ${c[2]})`);
+    }
+    ctx.fillStyle = rg;
+    ctx.beginPath();
+    ctx.ellipse(this.cx, rimY, rPx, rPx * TILT, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Crater wall, from the rim down to the pool. The far side of the wall
+    // faces the viewer and catches the flame; the near side is in shadow
+    // behind the rim, so it is drawn darker.
+    const depth = Math.max(0, poolY - rimY);
+    if (depth > 0.5) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.ellipse(this.cx, rimY, poolR, poolR * TILT, 0, 0, Math.PI * 2);
+      ctx.ellipse(this.cx, poolY, poolR, poolR * TILT, 0, 0, Math.PI * 2);
+      ctx.rect(this.cx - poolR, rimY, poolR * 2, depth);
+      ctx.clip();
+      const wg = ctx.createLinearGradient(0, rimY - poolR * TILT, 0, poolY + poolR * TILT);
+      // The wall is lit by the flame sitting directly above it, so it runs
+      // from shadowed just under the overhanging rim to warm at the pool.
+      wg.addColorStop(0, `rgba(${Math.round(96 * lum)}, ${Math.round(72 * lum)}, ${Math.round(48 * lum)}, 1)`);
+      wg.addColorStop(0.5, `rgba(${Math.round(206 * lum)}, ${Math.round(168 * lum)}, ${Math.round(120 * lum)}, 1)`);
+      wg.addColorStop(1, `rgba(${Math.round(246 * lum)}, ${Math.round(206 * lum)}, ${Math.round(150 * lum)}, 1)`);
+      ctx.fillStyle = wg;
+      ctx.fillRect(this.cx - poolR - 1, rimY - poolR, poolR * 2 + 2, depth + poolR * 2);
+      ctx.restore();
+    }
+
+    // The pool itself. Liquid wax is specular where the solid face is matt,
+    // so it carries a sharp reflection of the flame sitting right above it.
+    ctx.save();
+    ctx.beginPath();
+    ctx.ellipse(this.cx, poolY, poolR, poolR * TILT, 0, 0, Math.PI * 2);
+    ctx.clip();
+    ctx.fillStyle = `rgba(${Math.round(216 * lum)}, ${Math.round(178 * lum)}, ${Math.round(130 * lum)}, 1)`;
+    ctx.fillRect(this.cx - poolR, poolY - poolR, poolR * 2, poolR * 2);
+    const pg = ctx.createRadialGradient(this.cx, poolY, 0, this.cx, poolY, poolR);
+    pg.addColorStop(0, `rgba(255, 236, 200, ${(0.62 * lum).toFixed(3)})`);
+    pg.addColorStop(0.45, `rgba(255, 190, 120, ${(0.26 * lum).toFixed(3)})`);
+    pg.addColorStop(1, 'rgba(255, 170, 90, 0)');
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = pg;
+    ctx.fillRect(this.cx - poolR, poolY - poolR, poolR * 2, poolR * 2);
+    ctx.restore();
+
+    // A thin shadow just inside the rim, which is what actually reads as
+    // depth rather than as a flat disc with a lighter disc painted on it.
+    ctx.beginPath();
+    ctx.ellipse(this.cx, rimY, poolR, poolR * TILT, 0, Math.PI, Math.PI * 2);
+    ctx.lineWidth = Math.max(1, rPx * 0.05);
+    ctx.strokeStyle = `rgba(${Math.round(64 * lum)}, ${Math.round(46 * lum)}, ${Math.round(30 * lum)}, 0.5)`;
+    ctx.stroke();
+
+    // The wick: charred and bent over towards the oxygen-rich outer edge of
+    // the flame, which is how a candle trims itself.
+    const wy = poolY;
+    const tipY = this.py(wax.wickTop);
+    const bend = (wax.wickCarbon * 0.55 + 0.15) * (wax.wickTop - wax.centreHeight()) * this.scale;
+    ctx.beginPath();
+    ctx.moveTo(this.cx, wy);
+    ctx.quadraticCurveTo(this.cx + bend * 0.2, (wy + tipY) / 2, this.cx + bend, tipY);
+    ctx.lineWidth = Math.max(1.2, 0.0016 * this.scale);
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = state.lit ? 'rgba(24, 18, 14, 0.95)' : 'rgba(38, 32, 28, 0.95)';
+    ctx.stroke();
+
+    // The base of the wick glows: it sits inside the reaction zone.
+    if (state.lit) {
+      ctx.globalCompositeOperation = 'lighter';
+      const eg = ctx.createRadialGradient(this.cx, wy, 0, this.cx, wy, rPx * 0.7);
+      eg.addColorStop(0, `rgba(255, 150, 60, ${0.8 * lum})`);
+      eg.addColorStop(1, 'rgba(255, 120, 40, 0)');
+      ctx.fillStyle = eg;
+      ctx.beginPath();
+      ctx.arc(this.cx, wy, rPx * 0.7, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalCompositeOperation = 'source-over';
+    }
+  }
+
+  /**
+   * The flame. Soot incandescence is looked up from the precomputed Planck
+   * ramp; the blue base is added separately from the reaction rate, because
+   * it is chemiluminescence from excited CH and C2 rather than thermal
+   * emission and so does not lie on the blackbody locus at all.
+   */
+  drawFlame(state) {
+    const f = this.field;
+    const img = this.flameImg;
+    this.raster.raster(this.field, img.data);
+    this.flameCtx.putImageData(img, 0, 0);
+
+    // Two-stage upscale keeps the bilinear interpolation from showing its
+    // diamond pattern, and the small intermediate is cheap to blur.
+    const mc = this.midCtx;
+    mc.clearRect(0, 0, this.mid.width, this.mid.height);
+    mc.imageSmoothingEnabled = true;
+    mc.imageSmoothingQuality = 'high';
+    mc.filter = 'blur(1.6px)';
+    mc.drawImage(this.flameBuf, 0, 0, this.mid.width, this.mid.height);
+    mc.filter = 'none';
+
+    const { ctx } = this;
+    const wPx = f.nx * f.h * this.scale;
+    const hPx = f.ny * f.h * this.scale;
+    const x0 = this.cx - wPx / 2;
+    const y0 = this.py(this.wax.wickTop) - hPx;
+
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+
+    // Bloom: the same image drawn larger and dimmer, twice, approximates the
+    // veiling glare of a very bright small source.
+    ctx.globalAlpha = 0.30;
+    ctx.drawImage(this.mid, x0 - wPx * 0.45, y0 - hPx * 0.10, wPx * 1.9, hPx * 1.2);
+    ctx.globalAlpha = 0.42;
+    ctx.drawImage(this.mid, x0 - wPx * 0.14, y0 - hPx * 0.03, wPx * 1.28, hPx * 1.06);
+    ctx.globalAlpha = 1;
+    ctx.drawImage(this.mid, x0, y0, wPx, hPx);
+
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  /**
+   * Smoke. Soot that escapes the reaction zone - which happens in quantity
+   * only once the flame is out - rises, spreads by turbulent diffusion, and
+   * fades. It is drawn from the same soot field the solver advects.
+   */
+  drawSmoke(state) {
+    if (state.lit && state.blowStrength < 0.15) return;
+    const f = this.field;
+    const { ctx } = this;
+    const wPx = f.nx * f.h * this.scale;
+    const hPx = f.ny * f.h * this.scale;
+    const x0 = this.cx - wPx / 2;
+    const y0 = this.py(this.wax.wickTop) - hPx;
+    const cw = f.nx, ch = f.ny;
+
+    if (!this.smokeBuf) {
+      this.smokeBuf = document.createElement('canvas');
+      this.smokeBuf.width = cw; this.smokeBuf.height = ch;
+      this.smokeCtx = this.smokeBuf.getContext('2d');
+      this.smokeImg = this.smokeCtx.createImageData(cw, ch);
+    }
+    const d = this.smokeImg.data;
+    let any = false;
+    for (let j = 0; j < ch; j++) {
+      const row = (ch - 1 - j) * cw * 4;
+      for (let i = 0; i < cw; i++) {
+        const k = i + j * cw;
+        const a = Math.min(1, f.soot[k] * 0.9) * (f.T[k] < T_SOOT_IGNITION ? 1 : 0.15);
+        const o = row + i * 4;
+        d[o] = 190; d[o + 1] = 186; d[o + 2] = 180;
+        d[o + 3] = a * 190;
+        if (a > 0.01) any = true;
+      }
+    }
+    if (!any) return;
+    this.smokeCtx.putImageData(this.smokeImg, 0, 0);
+    ctx.save();
+    ctx.filter = 'blur(2px)';
+    ctx.globalAlpha = 0.55;
+    ctx.drawImage(this.smokeBuf, x0, y0, wPx, hPx);
+    ctx.restore();
+  }
+
+  drawVignette() {
+    const { ctx, w, h } = this;
+    const g = ctx.createRadialGradient(w / 2, h * 0.55, Math.min(w, h) * 0.25,
+                                       w / 2, h * 0.55, Math.max(w, h) * 0.78);
+    g.addColorStop(0, 'rgba(0, 0, 0, 0)');
+    g.addColorStop(1, 'rgba(0, 0, 0, 0.55)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, h);
+  }
+}
+
+// ==================================================================
+// app.js
+// ==================================================================
+
+/**
+ * Application shell: the simulation loop, the dial, and the modes.
+ *
+ * The loop runs the fluid solver on a fixed timestep and the renderer on the
+ * display's refresh. Fixed steps matter here - a buoyant plume is a genuine
+ * instability, so integrating it with a variable dt makes the flicker rate
+ * change whenever the frame rate does.
+ */
+
+
+
+
+
+
+
+// ---------------------------------------------------------------- simulation
+const GRID_NX = 40;
+const GRID_NY = 130;
+const DOMAIN_W = 0.024;                 // m across the simulated air volume
+const SUBSTEP = 1 / 480;                // s, fixed physics step
+const MAX_SUBSTEPS = 10;                // guard against spiral-of-death
+
+const field = new FlameField(GRID_NX, GRID_NY, DOMAIN_W / GRID_NX);
+const wax = new WaxBody();
+const air = new AirModel();
+const crackle = new Crackle();
+
+const state = {
+  intensity: 0.7,      // the dial, 0..1
+  lit: true,
+  relight: 0,          // s remaining on the wick ember before it takes
+  blowStrength: 0,
+  mode: null,          // null | 'focus' | 'reading'
+  zen: false,
+  sound: false,
+  focusEndsAt: 0,
+  focusFailed: false,
+};
+
+// ------------------------------------------------------------------ elements
+const canvas = document.getElementById('stage');
+const ui = document.getElementById('ui');
+const dial = document.getElementById('dial');
+const readout = document.getElementById('readout');
+const toast = document.getElementById('toast');
+const timerBar = document.getElementById('timerBar');
+const timerText = document.getElementById('timerText');
+const timerNote = document.getElementById('timerNote');
+const verse = document.getElementById('verse');
+const btn = {
+  mic: document.getElementById('btnMic'),
+  focus: document.getElementById('btnFocus'),
+  read: document.getElementById('btnRead'),
+  sound: document.getElementById('btnSound'),
+  zen: document.getElementById('btnZen'),
+};
+
+const renderer = new Renderer(canvas, field, wax);
+window.addEventListener('resize', () => renderer.resize());
+window.addEventListener('orientationchange', () => setTimeout(() => renderer.resize(), 120));
+
+// ---------------------------------------------------------------------- dial
+function setIntensity(v, haptic = false) {
+  const clamped = Math.max(0, Math.min(1, v));
+  if (haptic && Math.abs(clamped - state.intensity) > 0.02) buzz(6);
+  state.intensity = clamped;
+  dial.style.setProperty('--p', clamped.toFixed(3));
+  dial.setAttribute('aria-valuenow', Math.round(clamped * 100));
+}
+
+/** Short vibration, where the platform offers one. */
+function buzz(ms) {
+  if (navigator.vibrate) { try { navigator.vibrate(ms); } catch (e) { /* blocked */ } }
+}
+
+// Dragging anywhere on the dial adjusts it; the angle is taken with atan2 so
+// it tracks the finger rather than the raw vertical distance.
+let dragging = false;
+let dragRef = 0;
+let dragBase = 0;
+
+function angleAt(e) {
+  const r = dial.getBoundingClientRect();
+  const p = e.touches ? e.touches[0] : e;
+  return Math.atan2(p.clientY - (r.top + r.height / 2),
+                    p.clientX - (r.left + r.width / 2));
+}
+
+function onDown(e) {
+  dragging = true;
+  dragRef = angleAt(e);
+  dragBase = state.intensity;
+  dial.setPointerCapture?.(e.pointerId);
+  e.preventDefault();
+}
+function onMove(e) {
+  if (!dragging) return;
+  let d = angleAt(e) - dragRef;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  // Three quarters of a turn spans the full range.
+  setIntensity(dragBase + d / (Math.PI * 1.5), true);
+  wake();
+  e.preventDefault();
+}
+function onUp() { dragging = false; }
+
+dial.addEventListener('pointerdown', onDown);
+window.addEventListener('pointermove', onMove, { passive: false });
+window.addEventListener('pointerup', onUp);
+window.addEventListener('pointercancel', onUp);
+
+dial.addEventListener('keydown', (e) => {
+  const step = e.shiftKey ? 0.01 : 0.05;
+  if (e.key === 'ArrowUp' || e.key === 'ArrowRight') setIntensity(state.intensity + step);
+  else if (e.key === 'ArrowDown' || e.key === 'ArrowLeft') setIntensity(state.intensity - step);
+  else if (e.key === 'Home') setIntensity(0);
+  else if (e.key === 'End') setIntensity(1);
+  else if (e.key === ' ' || e.key === 'Enter') { toggleFlame(); e.preventDefault(); }
+  else return;
+  wake();
+  e.preventDefault();
+});
+
+// ------------------------------------------------------------- light / relight
+function extinguish(reason) {
+  if (!state.lit) return;
+  state.lit = false;
+  state.relight = 0;
+  dial.classList.add('out');
+  buzz([14, 40, 22]);
+  if (reason) showToast(reason);
+  crackle.setLevel(0, false);
+}
+
+function light() {
+  if (state.lit) return;
+  state.lit = true;
+  dial.classList.remove('out');
+  air.extinguishFor = 0;
+  buzz(12);
+  crackle.setLevel(state.intensity, true);
+}
+
+function toggleFlame() { state.lit ? extinguish(null) : light(); }
+
+// Tapping the flame itself lights or snuffs it.
+canvas.addEventListener('pointerdown', (e) => {
+  wake();
+  const r = canvas.getBoundingClientRect();
+  const x = e.clientX - r.left;
+  const y = e.clientY - r.top;
+  const near = Math.abs(x - r.width / 2) < r.width * 0.28
+    && y > r.height * 0.18 && y < r.height * 0.72;
+  if (near) toggleFlame();
+});
+
+// ---------------------------------------------------------------- UI plumbing
+let idleTimer = 0;
+function wake() {
+  ui.classList.remove('dim');
+  clearTimeout(idleTimer);
+  if (state.zen) return;
+  idleTimer = setTimeout(() => ui.classList.add('dim'), 4200);
+}
+['pointerdown', 'pointermove', 'keydown'].forEach((ev) =>
+  window.addEventListener(ev, wake, { passive: true }));
+
+let toastTimer = 0;
+function showToast(msg) {
+  toast.textContent = msg;
+  toast.classList.add('on');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.classList.remove('on'), 3400);
+}
+
+function press(el, on) { el.setAttribute('aria-pressed', on ? 'true' : 'false'); }
+
+// Microphone blow-out.
+btn.mic.addEventListener('click', async () => {
+  if (air.micReady) { air.disableMic(); press(btn.mic, false); showToast('Microphone off'); return; }
+  showToast('Allow the microphone, then blow at your phone');
+  const ok = await air.enableMic();
+  press(btn.mic, ok);
+  showToast(ok ? 'Blow at your phone to put it out'
+               : `Microphone unavailable (${air.micError})`);
+});
+
+// Focus timer. Leaving the app snuffs the candle, which is the whole point.
+const FOCUS_MS = 25 * 60 * 1000;
+btn.focus.addEventListener('click', () => {
+  if (state.mode === 'focus') { endFocus('Session cancelled'); return; }
+  state.mode = 'focus';
+  state.focusFailed = false;
+  state.focusEndsAt = Date.now() + FOCUS_MS;
+  press(btn.focus, true);
+  timerBar.classList.add('on');
+  timerNote.textContent = 'Leave the app and the candle goes out';
+  light();
+  showToast('25 minutes. Stay here.');
+});
+
+function endFocus(msg) {
+  state.mode = null;
+  press(btn.focus, false);
+  timerBar.classList.remove('on');
+  if (msg) showToast(msg);
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && state.mode === 'focus') {
+    state.focusFailed = true;
+    extinguish(null);
+  } else if (!document.hidden && state.focusFailed) {
+    state.focusFailed = false;
+    endFocus('You left. The candle went out.');
+  }
+});
+
+// Reading light: a wide, steady, warm pool rather than a dancing flame.
+btn.read.addEventListener('click', () => {
+  const on = state.mode !== 'reading';
+  state.mode = on ? 'reading' : null;
+  document.body.classList.toggle('reading', on);
+  press(btn.read, on);
+  if (on) {
+    setIntensity(0.82);
+    light();
+    showToast('Reading light: steady and warm');
+  }
+});
+
+btn.sound.addEventListener('click', () => {
+  state.sound = !state.sound;
+  press(btn.sound, state.sound);
+  if (state.sound) { crackle.start(); crackle.setLevel(state.intensity, state.lit); }
+  else crackle.stop();
+});
+
+// Solitude: everything goes away except the flame and one line of verse.
+const VERSES = [
+  ['Sukoon-e-dil ke liye kuch to ehtemam karoon,',
+   'let me make some arrangement for the heart’s peace'],
+  ['Zara der hi sahi, khud se to kalaam karoon.',
+   'even if only briefly, let me speak with myself'],
+];
+let verseIndex = 0;
+let verseTimer = 0;
+
+btn.zen.addEventListener('click', () => {
+  state.zen = !state.zen;
+  press(btn.zen, state.zen);
+  if (state.zen) {
+    ui.classList.add('dim');
+    cycleVerse();
+    verseTimer = setInterval(cycleVerse, 13000);
+  } else {
+    clearInterval(verseTimer);
+    verse.classList.remove('on');
+    wake();
+  }
+});
+
+function cycleVerse() {
+  verse.classList.remove('on');
+  setTimeout(() => {
+    const [line, sub] = VERSES[verseIndex % VERSES.length];
+    verse.querySelector('.line').textContent = line;
+    verse.querySelector('.sub').textContent = sub;
+    verse.classList.add('on');
+    verseIndex++;
+  }, 1200);
+}
+
+// ----------------------------------------------------------------- main loop
+let last = performance.now();
+let carry = 0;
+let fpsAcc = 0, fpsN = 0, quality = 1;
+
+function frame(now) {
+  requestAnimationFrame(frame);
+  let dt = (now - last) / 1000;
+  last = now;
+  // The first callback can carry a timestamp from before the synchronous
+  // start-up priming ran, which makes dt negative. Clamp both ends: a
+  // negative or absurd dt does not just look wrong, it makes the solver
+  // diverge, and a NaN in a field like this never washes out again.
+  if (!(dt > 0)) dt = 1 / 60;
+  if (dt > 0.25) dt = 0.25;            // returning from a background tab
+
+  air.update(dt);
+
+  // A hard enough puff strains the flame past the point where the chemistry
+  // can keep up. Reading mode shields the flame so a cough does not cost you
+  // your page.
+  state.blowStrength = air.blow;
+  if (state.lit && state.mode !== 'reading' && air.shouldExtinguish()) {
+    extinguish('Blown out');
+  }
+
+  field.windX = air.windX();
+  field.windY = air.windY();
+
+  // Fixed-step physics with an accumulator.
+  carry += dt;
+  const steps = Math.min(MAX_SUBSTEPS * quality, Math.floor(carry / SUBSTEP));
+  carry -= steps * SUBSTEP;
+  if (carry > 0.1) carry = 0.1;
+
+  const burn = state.lit ? effectiveIntensity() : 0;
+  for (let s = 0; s < steps; s++) {
+    if (state.lit) field.injectFuel(burn, SUBSTEP);
+    field.step(SUBSTEP);
+  }
+
+  wax.update(dt, burn, state.lit);
+  renderer.draw(state);
+  updateReadout(dt);
+  adaptQuality(dt);
+}
+
+/**
+ * Reading mode holds the flame steady; otherwise the dial goes straight
+ * through to the fuel supply, exactly as a wick length would.
+ */
+function effectiveIntensity() {
+  if (state.mode === 'reading') return 0.86;
+  return state.intensity;
+}
+
+/**
+ * Drive the device's actual backlight from the flame.
+ *
+ * This is the part a web page cannot do for itself, and it is what the whole
+ * app is for: the screen is meant to give off the light a candle gives off,
+ * not merely to draw a picture of one. The native shell exposes a bridge that
+ * sets brightness on its own window, which needs no permission and is
+ * restored by Android the moment you leave the app. In a plain browser the
+ * bridge is simply absent and nothing happens.
+ */
+function syncHostBrightness() {
+  const host = window.CandleHost;
+  if (!host || typeof host.setBrightness !== 'function') return;
+  const target = state.lit
+    ? Math.max(0.10, Math.min(1, renderer.luminance() * 0.92))
+    : 0.03;
+  // Ease towards it: matching the flicker frame for frame would make the
+  // backlight buzz, because the panel responds far more slowly than the
+  // rendered flame does.
+  hostBrightness += (target - hostBrightness) * 0.18;
+  try {
+    host.setBrightness(hostBrightness);
+  } catch (e) {
+    /* the bridge went away; nothing to do about it */
+  }
+}
+let hostBrightness = 0.5;
+
+let readoutAcc = 0;
+function updateReadout(dt) {
+  readoutAcc += dt;
+  if (readoutAcc < 0.25) return;
+  readoutAcc = 0;
+  syncHostBrightness();
+
+  if (state.mode === 'focus') {
+    const left = Math.max(0, state.focusEndsAt - Date.now());
+    const m = Math.floor(left / 60000);
+    const s = Math.floor((left % 60000) / 1000);
+    timerText.textContent = `${m}:${String(s).padStart(2, '0')}`;
+    if (left <= 0) { endFocus('Session complete.'); buzz([30, 60, 30]); }
+  }
+
+  if (state.zen || state.mode === 'reading') { readout.textContent = ''; return; }
+
+  // Live physical state, in real units. It is the honest version of a
+  // progress bar: these are the numbers the simulation is actually running.
+  const cd = (LUMINOUS_INTENSITY * (state.lit ? effectiveIntensity() : 0)).toFixed(2);
+  const mm = (wax.centreHeight() * 1000).toFixed(0);
+  const hrs = wax.elapsed / 3600;
+  readout.innerHTML =
+    `<span><b>${cd}</b> cd</span>` +
+    `<span><b>${mm}</b> mm</span>` +
+    `<span><b>${hrs < 10 ? hrs.toFixed(1) : Math.round(hrs)}</b> h burnt</span>`;
+}
+
+/**
+ * Drop the physics substep budget on devices that cannot keep up, rather
+ * than letting the whole thing judder. The flame simply flickers a little
+ * more coarsely.
+ */
+function adaptQuality(dt) {
+  fpsAcc += dt; fpsN++;
+  if (fpsN < 90) return;
+  const avg = fpsAcc / fpsN;
+  fpsAcc = 0; fpsN = 0;
+  if (avg > 0.026 && quality > 0.5) quality = 0.5;
+  else if (avg > 0.040 && quality > 0.3) quality = 0.3;
+  else if (avg < 0.019 && quality < 1) quality = Math.min(1, quality + 0.25);
+}
+
+// ------------------------------------------------------------------- startup
+setIntensity(0.7);
+air.attachTilt();
+
+// Give the flame a moment of simulated time so it opens already burning
+// instead of igniting in front of the user.
+for (let i = 0; i < 900; i++) {
+  field.injectFuel(0.7, SUBSTEP);
+  field.step(SUBSTEP);
+}
+
+wake();
+requestAnimationFrame(frame);
+
+// Exposed for the headless render check in tools/shoot.mjs.
+window.__candle = { field, wax, air, state, renderer, setIntensity, extinguish, light };
+</script>
+</body>
+</html>

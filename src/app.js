@@ -329,11 +329,40 @@ function effectiveIntensity() {
   return state.intensity;
 }
 
+/**
+ * Drive the device's actual backlight from the flame.
+ *
+ * This is the part a web page cannot do for itself, and it is what the whole
+ * app is for: the screen is meant to give off the light a candle gives off,
+ * not merely to draw a picture of one. The native shell exposes a bridge that
+ * sets brightness on its own window, which needs no permission and is
+ * restored by Android the moment you leave the app. In a plain browser the
+ * bridge is simply absent and nothing happens.
+ */
+function syncHostBrightness() {
+  const host = window.CandleHost;
+  if (!host || typeof host.setBrightness !== 'function') return;
+  const target = state.lit
+    ? Math.max(0.10, Math.min(1, renderer.luminance() * 0.92))
+    : 0.03;
+  // Ease towards it: matching the flicker frame for frame would make the
+  // backlight buzz, because the panel responds far more slowly than the
+  // rendered flame does.
+  hostBrightness += (target - hostBrightness) * 0.18;
+  try {
+    host.setBrightness(hostBrightness);
+  } catch (e) {
+    /* the bridge went away; nothing to do about it */
+  }
+}
+let hostBrightness = 0.5;
+
 let readoutAcc = 0;
 function updateReadout(dt) {
   readoutAcc += dt;
   if (readoutAcc < 0.25) return;
   readoutAcc = 0;
+  syncHostBrightness();
 
   if (state.mode === 'focus') {
     const left = Math.max(0, state.focusEndsAt - Date.now());
