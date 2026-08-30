@@ -176,7 +176,12 @@ function toggleFlame() {
  * it.
  */
 function syncRelight() {
-  const show = !state.lit && !state.zen && !state.locked;
+  // Not gated on zen. Zen hiding the ring meant that blowing the candle out in
+  // zen left no way to light it again at all: the ring never appeared, and the
+  // canvas tap handler ignores taps in zen too. The .dim class below already
+  // does the right thing - zen keeps an empty screen until you tap, and the
+  // ring then comes back with the rest of the controls.
+  const show = !state.lit && !state.locked;
   relightBtn.hidden = !show;
   relightBtn.classList.toggle('dim', ui.classList.contains('dim'));
   // Only write text when it actually changes. Assigning textContent

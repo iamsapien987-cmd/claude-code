@@ -115,15 +115,19 @@ const offFraction = off / px;
 const problems = [];
 if (lit.length) problems.push(`lit where it should be off: ${lit.map(([n]) => n).join(', ')}`);
 if (offFraction < 0.35) problems.push(`only ${(100 * offFraction).toFixed(1)}% of the frame is off`);
-// With the candle out the scene should be black almost everywhere. The margin
-// left here is for the wick's dying ember, which is real and should stay;
-// anything that lights actual area - a glow left behind, a marker drawn into
-// the scene - moves these well past the bounds.
+// With the candle out the scene is black. Not "mostly": there is no light
+// source, so nothing is lit, and it measures 100.00% off with a peak of 0.
+//
+// These bounds were loose before - 99.5% and a peak of 80 - which passed a
+// wick that was being stroked at a fixed grey regardless of the light. The
+// check was reporting a peak of 31 the whole time and the number got
+// explained away as an ember. Set just off the measurement so the next
+// constant that ignores the lighting fails here instead.
 const darkFraction = dark.off / dark.total;
-if (darkFraction < 0.995) {
+if (darkFraction < 0.999) {
   problems.push(`snuffed scene only ${(100 * darkFraction).toFixed(2)}% off`);
 }
-if (dark.peak > 80) problems.push(`snuffed scene still peaks at ${dark.peak.toFixed(0)}/255`);
+if (dark.peak > 4) problems.push(`snuffed scene still peaks at ${dark.peak.toFixed(0)}/255`);
 if (problems.length) {
   console.log('FAIL — ' + problems.join('; '));
   process.exit(1);

@@ -524,7 +524,17 @@ export class Renderer {
     ctx.quadraticCurveTo(this.cx + bend * 0.2, (wy + tipY) / 2, this.cx + bend, tipY);
     ctx.lineWidth = Math.max(1.2, 0.0016 * this.scale);
     ctx.lineCap = 'round';
-    ctx.strokeStyle = state.lit ? 'rgba(24, 18, 14, 0.95)' : 'rgba(38, 32, 28, 0.95)';
+    // Charred carbon, lit by the flame like everything else in this method.
+    //
+    // This used to switch to a fixed, *lighter* grey when the candle was out,
+    // so that the wick stayed findable in the dark. That made it the only
+    // thing here not multiplied by lum - lit pixels with nothing lighting
+    // them - and a snuffed candle was left with a small mark floating in an
+    // otherwise black frame. The relight ring marks the spot properly now, so
+    // the wick can go dark with the rest of the scene.
+    const wickLum = Math.max(0, lum);
+    ctx.strokeStyle = `rgba(${Math.round(24 * wickLum)}, ${Math.round(18 * wickLum)}, `
+      + `${Math.round(14 * wickLum)}, 0.95)`;
     ctx.stroke();
 
     // The base of the wick glows: it sits inside the reaction zone.

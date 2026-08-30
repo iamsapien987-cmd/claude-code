@@ -41,10 +41,11 @@ const flamePoint = () => page.evaluate(() => {
   return { x: r.cx / d, y: (top + bottom) / 2 };
 });
 
-/** The relight ring's centre and size in CSS pixels, or null if not shown. */
+/** The relight ring, or null when it is not actually there to be tapped. */
 const relightBox = () => page.evaluate(() => {
   const b = document.getElementById('relight');
-  if (b.hidden) return null;
+  // Dimmed counts as absent: it is transparent and takes no pointer events.
+  if (b.hidden || b.classList.contains('dim')) return null;
   const r = b.getBoundingClientRect();
   return { x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width, h: r.height };
 });
@@ -177,6 +178,26 @@ if (ring) {
   await tap(ring.x, ring.y);
   check('tapping the ring lights the candle', await lit() === true);
   check('...and the ring goes away', await relightBox() === null);
+}
+
+// 8. Zen must not trap the user with a candle they cannot light. It used to:
+//    the ring was gated on zen being off, and the canvas ignores taps in zen,
+//    so blowing the candle out in zen left no way back to a lit one at all.
+await relight();
+await page.waitForTimeout(300);
+await page.click('#btnZen');
+await page.waitForTimeout(600);
+check('zen hides the interface', await uiHidden());
+await page.evaluate(() => window.__candle.extinguish(null));
+await page.waitForTimeout(600);
+check('...and the ring stays away while it does', await relightBox() === null);
+await tap(120, 300);
+check('a tap in zen brings the controls back', await uiHidden() === false);
+const zenRing = await relightBox();
+check('...and the ring comes with them', zenRing !== null);
+if (zenRing) {
+  await tap(zenRing.x, zenRing.y);
+  check('the ring lights the candle in zen', await lit() === true);
 }
 
 await browser.close();

@@ -66,6 +66,7 @@ running on the user's phone (Xiaomi/MIUI).
 | Light pool at the base | ✅ user-confirmed fixed |
 | Focus timer + candle shrinking | ✅ looking right, full 25-min run still pending |
 | Microphone blow-out | ✅ user-confirmed, on native `AudioRecord` capture |
+| Double-tap to wake, ring to relight | ✅ user-confirmed |
 
 ### Not yet working
 
@@ -191,9 +192,9 @@ of the simulated volume.
 
 1. **Flame shape** — see §5. Deferred by the user to last.
 2. **25-minute timer run** — not yet completed end to end.
-3. **Relight flow untested on the device** — double tap to wake, and the ring
-   at the wick. Passes in a real browser engine with a touchscreen; not yet
-   confirmed on the phone.
+3. **Fullscreen untested on the device** — the system bars were never actually
+   being hidden (see the progress log); the fix compiles but has not been seen
+   working on the phone.
 
 ## 8. Play Store readiness
 
@@ -280,6 +281,34 @@ which request shape was last tried.
 **Untested on the device as of writing.** If it fails again, `audio inputs: 0`
 would point upstream of this app entirely — MIUI's privacy layer is the
 suspect — while a success on `plain` confirms the constraint theory.
+
+### 2026-08-30 — a mark with nothing lighting it, and a trap in zen
+
+Both from using the new relight flow on the device.
+
+**The arc inside the ring was the wick.** `drawPoolAndWick` stroked it with a
+fixed, deliberately lighter grey whenever the candle was out, so that it stayed
+findable in the dark. Every other element in that method multiplies by `lum` —
+the wick was the only one that did not, which made it lit pixels with no light
+source, and a snuffed candle was left with a small mark floating in an
+otherwise black frame. The ring marks the spot properly now, so the wick scales
+with the light like everything else and simply goes dark.
+
+The uncomfortable part: `oled.mjs` had been reporting a peak of 31/255 for the
+snuffed scene all along, and that number got written down as "the wick's dying
+ember" instead of being chased. The fixed grey has a luminance of 33. **The
+measurement was right and the explanation was invented to fit it.** The scene
+now measures 100.00% off with a peak of 0, and the bounds are set just off that
+(99.9%, peak 4) rather than at the loose values that let this through.
+
+**Zen trapped the user with a candle they could not light.** `syncRelight` gated
+the ring on `!state.zen`, and the canvas tap handler ignores taps in zen too, so
+blowing the candle out in zen left no route back to a lit one at all. The gate
+is gone; the `.dim` class already gives the right behaviour, since zen keeps an
+empty screen until you tap and the ring then returns with the controls.
+
+`tap-check.mjs` is at 26 checks and covers the zen path; both new checks were
+confirmed to fail with their fixes reverted.
 
 ### 2026-08-30 — the status bar was never actually hidden
 
