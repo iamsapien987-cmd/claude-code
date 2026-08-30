@@ -4,11 +4,11 @@
  * modules into one script can break on scoping in ways that only show up at
  * runtime, so this has to load the built artefact, not the sources.
  */
-import { chromium } from 'playwright';
+import { launchChromium } from './browser.mjs';
 import path from 'node:path';
 
 const file = 'file://' + path.resolve(import.meta.dirname, '..', 'dist', 'candle.html');
-const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' });
+const browser = await launchChromium();
 const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
 
 const errors = [];

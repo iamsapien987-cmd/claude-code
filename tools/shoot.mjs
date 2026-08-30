@@ -3,7 +3,7 @@
  * lets the simulation settle, and captures frames so the visuals can be
  * reviewed without a device in hand.
  */
-import { chromium } from 'playwright';
+import { launchChromium } from './browser.mjs';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -26,7 +26,7 @@ const url = `http://127.0.0.1:${server.address().port}/`;
 const outDir = path.join(ROOT, process.env.OUT || 'shots');
 fs.mkdirSync(outDir, { recursive: true });
 
-const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' });
+const browser = await launchChromium();
 const page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 });
 const errors = [];
 page.on('pageerror', (e) => errors.push(String(e)));

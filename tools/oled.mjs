@@ -12,7 +12,7 @@
  * with blue the most expensive and green the least, so the weights are the
  * usual approximation for emission cost rather than perceived brightness.
  */
-import { chromium } from 'playwright';
+import { launchChromium } from './browser.mjs';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -31,7 +31,7 @@ const server = http.createServer((req, res) => {
 });
 await new Promise((r) => server.listen(0, r));
 
-const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' });
+const browser = await launchChromium();
 const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
 await page.goto(`http://127.0.0.1:${server.address().port}/?i=${process.env.I || 0.6}`);
 await page.waitForTimeout(4500);

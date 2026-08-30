@@ -24,6 +24,8 @@ jobs:
         with:
           node-version: '22'
       - run: npm ci || npm install
+      - name: Install a browser for the headless render checks
+        run: npx playwright install --with-deps chromium
       - name: Physics invariants
         run: node --test "test/*.test.mjs"
       - name: Build the single-file bundle

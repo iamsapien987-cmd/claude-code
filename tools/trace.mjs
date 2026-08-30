@@ -1,4 +1,4 @@
-import { chromium } from 'playwright';
+import { launchChromium } from './browser.mjs';
 import http from 'node:http'; import fs from 'node:fs'; import path from 'node:path';
 const ROOT = path.resolve(import.meta.dirname, '..');
 const T = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css' };
@@ -8,7 +8,7 @@ const s = http.createServer((q, r) => {
     r.writeHead(200, { 'Content-Type': T[path.extname(t)] || 'application/octet-stream' }); r.end(b); });
 });
 await new Promise((r) => s.listen(0, r));
-const b = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' });
+const b = await launchChromium();
 const p = await b.newPage({ viewport: { width: 390, height: 844 } });
 p.on('pageerror', (e) => console.log('PAGEERROR', e));
 await p.addInitScript(() => {
