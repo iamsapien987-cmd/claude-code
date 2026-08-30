@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="theme-color" content="#000000">
 <meta name="description" content="A candle simulated from first principles: buoyant combustion, blackbody radiation, and real wax melting.">
-<title>Candle</title>
+<title>Real Candle</title>
 <style>
 /* The whole interface is deliberately quiet. Anything that is not the flame
    competes with it, so the controls sit on glass, stay small, and fade out. */
@@ -126,6 +126,32 @@ html, body {
   touch-action: none;
 }
 #dial:active { cursor: grabbing; }
+/* Extends the touch target well past the visible ring without changing how
+   it looks. A 92 px circle is a small thing to catch with a thumb. */
+#dial::after {
+  content: '';
+  position: absolute;
+  inset: -26px;
+  border-radius: 50%;
+}
+
+/* The pointer. Without it the dial gave no indication of where it was set
+   beyond the length of the arc, which is hard to read at a glance and gave
+   nothing to aim at. */
+#dialKnob {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 13px;
+  height: 13px;
+  margin: -6.5px 0 0 -6.5px;
+  border-radius: 50%;
+  background: #fff2df;
+  box-shadow: 0 0 10px rgba(255, 149, 41, 0.9), 0 1px 3px rgba(0, 0, 0, 0.6);
+  transform: rotate(var(--angle, 180deg)) translateY(-37px);
+  pointer-events: none;
+}
+#dial.out #dialKnob { background: rgba(255, 255, 255, 0.3); box-shadow: none; }
 #dial:focus-visible { outline: 2px solid rgba(255, 170, 90, 0.7); outline-offset: 4px; }
 
 /* The arc is a masked conic gradient, so it costs one element and no SVG. */
@@ -200,6 +226,10 @@ html, body {
   color: rgba(255, 255, 255, 0.26);
 }
 
+/* Locked: everything goes away and nothing responds, so a screenshot has
+   only the candle in it. */
+body.locked #ui, body.locked #timerBar { opacity: 0; pointer-events: none; }
+
 #toast {
   position: fixed;
   bottom: max(150px, calc(env(safe-area-inset-bottom) + 150px));
@@ -253,15 +283,19 @@ body.reading #hint { opacity: 0; }
       <button class="tool" id="btnZen"   aria-pressed="false" title="Hide everything" aria-label="Solitude mode">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6z"/><circle cx="12" cy="12" r="2.5"/></svg>
       </button>
+      <button class="tool" id="btnLock"  aria-pressed="false" title="Lock the screen" aria-label="Lock screen">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="10.5" width="16" height="10" rx="2.5"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>
+      </button>
     </div>
 
     <div id="dial" role="slider" tabindex="0" aria-label="Flame intensity"
          aria-valuemin="0" aria-valuemax="100" aria-valuenow="70">
       <div id="dialTrack"></div>
       <div id="dialGlow"></div>
+      <div id="dialKnob"></div>
       <div id="dialFlame"></div>
     </div>
-    <div id="hint">Drag the dial &middot; tap the flame to light it</div>
+    <div id="hint">Slide the dial up or down &middot; tap the flame to snuff it</div>
   </div>
 
   <div id="timerBar"><span id="timerText"></span><span id="timerNote"></span></div>
@@ -1422,6 +1456,9 @@ const DRIP_RATE = 0.006;
  */
 const DRIP_FILM = 1.6e-4;
 
+/** The stub left when a candle has burned out: below this the wick starves. */
+const MIN_HEIGHT = 0.007;   // m
+
 /** Radial samples across the candle's top face. */
 const PROFILE_N = 41;
 
@@ -1435,12 +1472,23 @@ function waxViscosity(T) {
 class WaxBody {
   constructor() {
     this.reset();
-    // Real time per simulated second. A candle burning at true speed loses
-    // about 5 mm an hour, so watching it melt needs the clock sped up.
-    this.timeScale = 90;
+    /**
+     * Real time per simulated second.
+     *
+     * A 28 mm candle loses about 11 mm an hour for real, which is far too
+     * slow to watch. But the first value here was 90, which is 16 mm a
+     * *minute*: the whole 130 mm candle was gone in about eight minutes, long
+     * before a focus session could finish.
+     *
+     * Six is the compromise. A 25 minute session consumes about 28 mm, a
+     * fifth of the candle - clearly visible as it burns down, with plenty
+     * left - and a couple of hours of use burns one all the way through.
+     */
+    this.timeScale = 6;
   }
 
   reset() {
+    this.spent = false;              // true once there is no wax left to burn
     this.height = CANDLE_HEIGHT_0;   // m, height of the untouched outer wall
     this.burnedMass = 0;             // kg consumed so far
     this.wickExposed = WICK_EXPOSED; // m of wick standing proud of the pool
@@ -1481,8 +1529,13 @@ class WaxBody {
     const t = dt * this.timeScale;
     this.elapsed += lit ? t : 0;
 
+    // A wick needs a pool of molten wax to draw on. Once the candle is down
+    // to a stub there is nothing left to feed it and the flame goes out - a
+    // real candle ends the same way, rather than by vanishing.
+    if (this.centreHeight() <= MIN_HEIGHT) this.spent = true;
+
     this.updateThermal(t, intensity, lit);
-    if (lit) this.consume(t, intensity);
+    if (lit && !this.spent) this.consume(t, intensity);
     this.levelPool(t);
     this.updateDrips(dt);
     this.updateWick(t, intensity, lit);
@@ -2069,6 +2122,13 @@ const ROOM_LIGHT_GAIN = 7.5e-4;
 const GLARE_REACH = 0.62;
 
 /**
+ * Converts illuminance on the surface to screen alpha. Separate from the
+ * glare's gain because it is a different quantity: light landing on a
+ * diffuse surface, not scattering around the source.
+ */
+const GROUND_LIGHT_GAIN = 2.6e-4;
+
+/**
  * Ramp a falloff to nothing well before its own outer edge.
  *
  * A gradient that only approaches zero leaves a floor of one or two counts
@@ -2256,30 +2316,35 @@ class Renderer {
     const rPx = CANDLE_RADIUS * this.scale;
 
     // Soft pool of light on the table.
-    const reach = rPx * 9;
+    // Light falling on the surface the candle stands on.
+    //
+    // For a source at height h above a plane, the illuminance at radial
+    // distance r is E = I cos(theta) / d^2 with d = sqrt(r^2 + h^2) and
+    // cos(theta) = h/d, so
+    //
+    //     E(r) = I * h / (d^2 * (d + L))
+    //
+    // taking the extended-source form of the falloff. The h in the numerator
+    // is the part that was missing: the pool used a fixed radius of nine
+    // candle-radii no matter how high the flame was, so as the candle burned
+    // down and the flame came closer it kept flooding the same wide area from
+    // a shorter distance and turned into a floodlight. Now the patch narrows
+    // as the flame descends, which is what a light source approaching a table
+    // actually does.
+    const hFlame = Math.max(0.004, (this.wax.wickTop || 0) + 0.015);
+    const L = FLAME_HEIGHT;
+    const reach = Math.min(rPx * 9, Math.max(rPx * 2.2, hFlame * 2.4 * this.scale));
     const g = ctx.createRadialGradient(this.cx, y, rPx * 0.4, this.cx, y, reach);
     const [r, gr, b] = ROOM_RGB;
-    // Same rule as the glare: this is light falling on a real surface, but it
-    // still has to reach true zero rather than trailing off across the panel.
-    for (let i = 0; i <= 10; i++) {
-      const s = i / 10;
-      const falloff = 0.30 / (1 + 9 * s * s);
-      const a = i === 10 ? 0 : cutoff(falloff * lum * taper(s));
+    const spanM = reach / this.scale;
+    for (let i = 0; i <= 12; i++) {
+      const s = i / 12;
+      const rad = s * spanM;                       // metres out along the table
+      const d = Math.hypot(rad, hFlame);
+      const e = (hFlame / (d * d * (d + L)));
+      const a = i === 12 ? 0 : cutoff(Math.min(0.34, e * lum * GROUND_LIGHT_GAIN) * taper(s));
       g.addColorStop(s, `rgba(${r}, ${gr}, ${b}, ${a.toFixed(4)})`);
     }
-    ctx.globalCompositeOperation = 'lighter';
-    ctx.save();
-    ctx.translate(0, y);
-    ctx.scale(1, TILT * 1.6);
-    ctx.translate(0, -y);
-    ctx.fillStyle = g;
-    // Bounded to the lit ellipse; outside it nothing is drawn, so it stays off.
-    ctx.beginPath();
-    ctx.arc(this.cx, y, reach, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-    ctx.globalCompositeOperation = 'source-over';
-
     // Contact shadow directly under the candle.
     const sh = ctx.createRadialGradient(this.cx, y, 0, this.cx, y, rPx * 1.9);
     sh.addColorStop(0, 'rgba(0, 0, 0, 0.85)');
@@ -2679,6 +2744,7 @@ const state = {
   lit: true,
   relight: 0,          // s remaining on the wick ember before it takes
   blowStrength: 0,
+  locked: false,       // screen lock: ignores touch, hides everything
   mode: null,          // null | 'focus' | 'reading'
   zen: false,
   sound: false,
@@ -2701,6 +2767,7 @@ const btn = {
   read: document.getElementById('btnRead'),
   sound: document.getElementById('btnSound'),
   zen: document.getElementById('btnZen'),
+  lock: document.getElementById('btnLock'),
 };
 
 const renderer = new Renderer(canvas, field, wax);
@@ -2714,6 +2781,9 @@ function setIntensity(v, haptic = false) {
   if (haptic && Math.abs(clamped - state.intensity) > 0.02) buzz(6);
   state.intensity = clamped;
   dial.style.setProperty('--p', clamped.toFixed(3));
+  // The arc is a conic gradient starting at the bottom and sweeping 270
+  // degrees, so the pointer sits at the same place along that sweep.
+  dial.style.setProperty('--angle', `${180 + clamped * 270}deg`);
   dial.setAttribute('aria-valuenow', Math.round(clamped * 100));
   // Show what the simulation is doing while the dial is in hand, then let it
   // go quiet again. A permanent heads-up display of telemetry sitting under a
@@ -2728,33 +2798,34 @@ function buzz(ms) {
   if (navigator.vibrate) { try { navigator.vibrate(ms); } catch (e) { /* blocked */ } }
 }
 
-// Dragging anywhere on the dial adjusts it; the angle is taken with atan2 so
-// it tracks the finger rather than the raw vertical distance.
+/**
+ * The dial responds to a straight up-or-down drag.
+ *
+ * It used to track the angle of your finger around the ring with atan2, which
+ * is the obvious reading of "dial" and is genuinely hard to use: you have to
+ * describe an arc around a 92 px circle with a thumb that is covering it. A
+ * vertical drag is what rotary controls in audio software have used for
+ * decades, for the same reason. The ring stays as the display - now with a
+ * pointer on it - and the whole travel is a comfortable thumb's length.
+ */
+const DIAL_TRAVEL = 170;   // CSS pixels of drag for the full range
 let dragging = false;
-let dragRef = 0;
+let dragStartY = 0;
 let dragBase = 0;
 
-function angleAt(e) {
-  const r = dial.getBoundingClientRect();
-  const p = e.touches ? e.touches[0] : e;
-  return Math.atan2(p.clientY - (r.top + r.height / 2),
-                    p.clientX - (r.left + r.width / 2));
-}
+function pointerY(e) { return (e.touches ? e.touches[0] : e).clientY; }
 
 function onDown(e) {
+  if (state.locked) return;
   dragging = true;
-  dragRef = angleAt(e);
+  dragStartY = pointerY(e);
   dragBase = state.intensity;
   dial.setPointerCapture?.(e.pointerId);
   e.preventDefault();
 }
 function onMove(e) {
   if (!dragging) return;
-  let d = angleAt(e) - dragRef;
-  while (d > Math.PI) d -= Math.PI * 2;
-  while (d < -Math.PI) d += Math.PI * 2;
-  // Three quarters of a turn spans the full range.
-  setIntensity(dragBase + d / (Math.PI * 1.5), true);
+  setIntensity(dragBase + (dragStartY - pointerY(e)) / DIAL_TRAVEL, true);
   wake();
   e.preventDefault();
 }
@@ -2797,7 +2868,22 @@ function light() {
   crackle.setLevel(state.intensity, true);
 }
 
-function toggleFlame() { state.lit ? extinguish(null) : light(); }
+function toggleFlame() {
+  if (wax.spent) { freshCandle(); return; }
+  state.lit ? extinguish(null) : light();
+}
+
+/** Replace a burnt-out candle with a new one. */
+function freshCandle() {
+  wax.reset();
+  field.reset();
+  for (let i = 0; i < 600; i++) {
+    field.injectFuel(state.intensity, SUBSTEP);
+    field.step(SUBSTEP);
+  }
+  light();
+  showToast('A fresh candle');
+}
 
 // Tapping the flame itself lights or snuffs it.
 //
@@ -2817,6 +2903,7 @@ window.addEventListener('pointerdown', () => {
 }, { capture: true });
 
 canvas.addEventListener('pointerdown', (e) => {
+  if (state.locked) return;
   const wasHidden = uiWasHiddenOnPress;
   wake();
   if (wasHidden || state.zen) return;
@@ -2827,6 +2914,7 @@ canvas.addEventListener('pointerdown', (e) => {
 // ---------------------------------------------------------------- UI plumbing
 let idleTimer = 0;
 function wake() {
+  if (state.locked) return;
   ui.classList.remove('dim');
   clearTimeout(idleTimer);
   if (state.zen) return;
@@ -2932,6 +3020,38 @@ btn.sound.addEventListener('click', () => {
  * written on the screen is something the user has to read, and being asked to
  * read someone else's chosen words is the opposite of what this mode is for.
  */
+/**
+ * Screen lock.
+ *
+ * Locks out touch entirely and takes the interface away, so the candle can be
+ * left on a desk without a stray brush of the hand changing anything - and so
+ * a screenshot has nothing in it but the candle. Double-tap to unlock, which
+ * is deliberately a gesture no accidental touch produces.
+ */
+btn.lock.addEventListener('click', () => {
+  state.locked = true;
+  press(btn.lock, true);
+  document.body.classList.add('locked');
+  ui.classList.add('dim');
+  showToast('Screen locked. Double-tap to unlock.');
+});
+
+let lastTapAt = 0;
+window.addEventListener('pointerdown', (e) => {
+  if (!state.locked) return;
+  const now = performance.now();
+  if (now - lastTapAt < 400) {
+    state.locked = false;
+    press(btn.lock, false);
+    document.body.classList.remove('locked');
+    lastTapAt = 0;
+    wake();
+    showToast('Unlocked');
+  } else {
+    lastTapAt = now;
+  }
+}, { capture: true });
+
 btn.zen.addEventListener('click', () => {
   state.zen = !state.zen;
   press(btn.zen, state.zen);
@@ -2961,6 +3081,16 @@ function frame(now) {
 
   air.update(dt);
 
+  // The focus clock is advanced here, every frame, with the full frame time.
+  // It used to be decremented inside the quarter-second display update but
+  // by that update's *own* dt - a single frame - so it discarded about
+  // ninety-four per cent of every interval and ran at roughly a fifteenth of
+  // real speed. On a phone that reads as a timer randomly stalling.
+  if (state.mode === 'focus' && !state.focusPaused) {
+    state.focusLeft = Math.max(0, state.focusLeft - dt * 1000);
+    if (state.focusLeft <= 0) { endFocus('Done.'); buzz([30, 60, 30]); }
+  }
+
   // A hard enough puff strains the flame past the point where the chemistry
   // can keep up. Reading mode shields the flame so a cough does not cost you
   // your page.
@@ -2985,6 +3115,16 @@ function frame(now) {
   }
 
   wax.update(dt, burn, state.lit);
+
+  // Out of wax. The flame dies, and so does everything that belonged to it -
+  // including the crackle, which used to carry on over an empty screen
+  // because its level was only ever set when the flame was toggled by hand.
+  if (wax.spent && state.lit) {
+    extinguish(null);
+    showToast('The candle has burned out. Tap the wick for a new one.');
+  }
+  if (state.sound) crackle.setLevel(state.intensity, state.lit && !wax.spent);
+
   renderer.draw(state);
   updateReadout(dt);
   adaptQuality(dt);
@@ -3048,11 +3188,9 @@ function updateReadout(dt) {
   syncHostBrightness();
 
   if (state.mode === 'focus') {
-    if (!state.focusPaused) state.focusLeft = Math.max(0, state.focusLeft - dt * 1000);
     const m = Math.floor(state.focusLeft / 60000);
     const sec = Math.floor((state.focusLeft % 60000) / 1000);
     timerText.textContent = `${m}:${String(sec).padStart(2, '0')}`;
-    if (state.focusLeft <= 0) { endFocus('Done.'); buzz([30, 60, 30]); }
   }
 
   if (state.zen || state.mode === 'reading') { readout.textContent = ''; return; }

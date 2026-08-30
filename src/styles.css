@@ -117,6 +117,32 @@ html, body {
   touch-action: none;
 }
 #dial:active { cursor: grabbing; }
+/* Extends the touch target well past the visible ring without changing how
+   it looks. A 92 px circle is a small thing to catch with a thumb. */
+#dial::after {
+  content: '';
+  position: absolute;
+  inset: -26px;
+  border-radius: 50%;
+}
+
+/* The pointer. Without it the dial gave no indication of where it was set
+   beyond the length of the arc, which is hard to read at a glance and gave
+   nothing to aim at. */
+#dialKnob {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 13px;
+  height: 13px;
+  margin: -6.5px 0 0 -6.5px;
+  border-radius: 50%;
+  background: #fff2df;
+  box-shadow: 0 0 10px rgba(255, 149, 41, 0.9), 0 1px 3px rgba(0, 0, 0, 0.6);
+  transform: rotate(var(--angle, 180deg)) translateY(-37px);
+  pointer-events: none;
+}
+#dial.out #dialKnob { background: rgba(255, 255, 255, 0.3); box-shadow: none; }
 #dial:focus-visible { outline: 2px solid rgba(255, 170, 90, 0.7); outline-offset: 4px; }
 
 /* The arc is a masked conic gradient, so it costs one element and no SVG. */
@@ -190,6 +216,10 @@ html, body {
   text-transform: uppercase;
   color: rgba(255, 255, 255, 0.26);
 }
+
+/* Locked: everything goes away and nothing responds, so a screenshot has
+   only the candle in it. */
+body.locked #ui, body.locked #timerBar { opacity: 0; pointer-events: none; }
 
 #toast {
   position: fixed;

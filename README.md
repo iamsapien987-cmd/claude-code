@@ -1,4 +1,4 @@
-# Candle
+# Real Candle
 
 A candle simulated from first principles: buoyant combustion, blackbody
 radiation, and wax that actually melts.

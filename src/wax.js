@@ -37,6 +37,9 @@ const DRIP_RATE = 0.006;
  */
 const DRIP_FILM = 1.6e-4;
 
+/** The stub left when a candle has burned out: below this the wick starves. */
+export const MIN_HEIGHT = 0.007;   // m
+
 /** Radial samples across the candle's top face. */
 const PROFILE_N = 41;
 
@@ -50,12 +53,23 @@ export function waxViscosity(T) {
 export class WaxBody {
   constructor() {
     this.reset();
-    // Real time per simulated second. A candle burning at true speed loses
-    // about 5 mm an hour, so watching it melt needs the clock sped up.
-    this.timeScale = 90;
+    /**
+     * Real time per simulated second.
+     *
+     * A 28 mm candle loses about 11 mm an hour for real, which is far too
+     * slow to watch. But the first value here was 90, which is 16 mm a
+     * *minute*: the whole 130 mm candle was gone in about eight minutes, long
+     * before a focus session could finish.
+     *
+     * Six is the compromise. A 25 minute session consumes about 28 mm, a
+     * fifth of the candle - clearly visible as it burns down, with plenty
+     * left - and a couple of hours of use burns one all the way through.
+     */
+    this.timeScale = 6;
   }
 
   reset() {
+    this.spent = false;              // true once there is no wax left to burn
     this.height = CANDLE_HEIGHT_0;   // m, height of the untouched outer wall
     this.burnedMass = 0;             // kg consumed so far
     this.wickExposed = WICK_EXPOSED; // m of wick standing proud of the pool
@@ -96,8 +110,13 @@ export class WaxBody {
     const t = dt * this.timeScale;
     this.elapsed += lit ? t : 0;
 
+    // A wick needs a pool of molten wax to draw on. Once the candle is down
+    // to a stub there is nothing left to feed it and the flame goes out - a
+    // real candle ends the same way, rather than by vanishing.
+    if (this.centreHeight() <= MIN_HEIGHT) this.spent = true;
+
     this.updateThermal(t, intensity, lit);
-    if (lit) this.consume(t, intensity);
+    if (lit && !this.spent) this.consume(t, intensity);
     this.levelPool(t);
     this.updateDrips(dt);
     this.updateWick(t, intensity, lit);

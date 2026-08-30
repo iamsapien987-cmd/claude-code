@@ -53,6 +53,13 @@ const ROOM_LIGHT_GAIN = 7.5e-4;
 const GLARE_REACH = 0.62;
 
 /**
+ * Converts illuminance on the surface to screen alpha. Separate from the
+ * glare's gain because it is a different quantity: light landing on a
+ * diffuse surface, not scattering around the source.
+ */
+const GROUND_LIGHT_GAIN = 2.6e-4;
+
+/**
  * Ramp a falloff to nothing well before its own outer edge.
  *
  * A gradient that only approaches zero leaves a floor of one or two counts
@@ -240,30 +247,35 @@ export class Renderer {
     const rPx = CANDLE_RADIUS * this.scale;
 
     // Soft pool of light on the table.
-    const reach = rPx * 9;
+    // Light falling on the surface the candle stands on.
+    //
+    // For a source at height h above a plane, the illuminance at radial
+    // distance r is E = I cos(theta) / d^2 with d = sqrt(r^2 + h^2) and
+    // cos(theta) = h/d, so
+    //
+    //     E(r) = I * h / (d^2 * (d + L))
+    //
+    // taking the extended-source form of the falloff. The h in the numerator
+    // is the part that was missing: the pool used a fixed radius of nine
+    // candle-radii no matter how high the flame was, so as the candle burned
+    // down and the flame came closer it kept flooding the same wide area from
+    // a shorter distance and turned into a floodlight. Now the patch narrows
+    // as the flame descends, which is what a light source approaching a table
+    // actually does.
+    const hFlame = Math.max(0.004, (this.wax.wickTop || 0) + 0.015);
+    const L = FLAME_HEIGHT;
+    const reach = Math.min(rPx * 9, Math.max(rPx * 2.2, hFlame * 2.4 * this.scale));
     const g = ctx.createRadialGradient(this.cx, y, rPx * 0.4, this.cx, y, reach);
     const [r, gr, b] = ROOM_RGB;
-    // Same rule as the glare: this is light falling on a real surface, but it
-    // still has to reach true zero rather than trailing off across the panel.
-    for (let i = 0; i <= 10; i++) {
-      const s = i / 10;
-      const falloff = 0.30 / (1 + 9 * s * s);
-      const a = i === 10 ? 0 : cutoff(falloff * lum * taper(s));
+    const spanM = reach / this.scale;
+    for (let i = 0; i <= 12; i++) {
+      const s = i / 12;
+      const rad = s * spanM;                       // metres out along the table
+      const d = Math.hypot(rad, hFlame);
+      const e = (hFlame / (d * d * (d + L)));
+      const a = i === 12 ? 0 : cutoff(Math.min(0.34, e * lum * GROUND_LIGHT_GAIN) * taper(s));
       g.addColorStop(s, `rgba(${r}, ${gr}, ${b}, ${a.toFixed(4)})`);
     }
-    ctx.globalCompositeOperation = 'lighter';
-    ctx.save();
-    ctx.translate(0, y);
-    ctx.scale(1, TILT * 1.6);
-    ctx.translate(0, -y);
-    ctx.fillStyle = g;
-    // Bounded to the lit ellipse; outside it nothing is drawn, so it stays off.
-    ctx.beginPath();
-    ctx.arc(this.cx, y, reach, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-    ctx.globalCompositeOperation = 'source-over';
-
     // Contact shadow directly under the candle.
     const sh = ctx.createRadialGradient(this.cx, y, 0, this.cx, y, rPx * 1.9);
     sh.addColorStop(0, 'rgba(0, 0, 0, 0.85)');

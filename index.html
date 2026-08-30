@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="theme-color" content="#000000">
 <meta name="description" content="A candle simulated from first principles: buoyant combustion, blackbody radiation, and real wax melting.">
-<title>Candle</title>
+<title>Real Candle</title>
 <link rel="stylesheet" href="src/styles.css">
 </head>
 <body>
@@ -30,15 +30,19 @@
       <button class="tool" id="btnZen"   aria-pressed="false" title="Hide everything" aria-label="Solitude mode">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6z"/><circle cx="12" cy="12" r="2.5"/></svg>
       </button>
+      <button class="tool" id="btnLock"  aria-pressed="false" title="Lock the screen" aria-label="Lock screen">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="10.5" width="16" height="10" rx="2.5"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>
+      </button>
     </div>
 
     <div id="dial" role="slider" tabindex="0" aria-label="Flame intensity"
          aria-valuemin="0" aria-valuemax="100" aria-valuenow="70">
       <div id="dialTrack"></div>
       <div id="dialGlow"></div>
+      <div id="dialKnob"></div>
       <div id="dialFlame"></div>
     </div>
-    <div id="hint">Drag the dial &middot; tap the flame to light it</div>
+    <div id="hint">Slide the dial up or down &middot; tap the flame to snuff it</div>
   </div>
 
   <div id="timerBar"><span id="timerText"></span><span id="timerNote"></span></div>

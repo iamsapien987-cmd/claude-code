@@ -31,6 +31,7 @@ const state = {
   lit: true,
   relight: 0,          // s remaining on the wick ember before it takes
   blowStrength: 0,
+  locked: false,       // screen lock: ignores touch, hides everything
   mode: null,          // null | 'focus' | 'reading'
   zen: false,
   sound: false,
@@ -53,6 +54,7 @@ const btn = {
   read: document.getElementById('btnRead'),
   sound: document.getElementById('btnSound'),
   zen: document.getElementById('btnZen'),
+  lock: document.getElementById('btnLock'),
 };
 
 const renderer = new Renderer(canvas, field, wax);
@@ -66,6 +68,9 @@ function setIntensity(v, haptic = false) {
   if (haptic && Math.abs(clamped - state.intensity) > 0.02) buzz(6);
   state.intensity = clamped;
   dial.style.setProperty('--p', clamped.toFixed(3));
+  // The arc is a conic gradient starting at the bottom and sweeping 270
+  // degrees, so the pointer sits at the same place along that sweep.
+  dial.style.setProperty('--angle', `${180 + clamped * 270}deg`);
   dial.setAttribute('aria-valuenow', Math.round(clamped * 100));
   // Show what the simulation is doing while the dial is in hand, then let it
   // go quiet again. A permanent heads-up display of telemetry sitting under a
@@ -80,33 +85,34 @@ function buzz(ms) {
   if (navigator.vibrate) { try { navigator.vibrate(ms); } catch (e) { /* blocked */ } }
 }
 
-// Dragging anywhere on the dial adjusts it; the angle is taken with atan2 so
-// it tracks the finger rather than the raw vertical distance.
+/**
+ * The dial responds to a straight up-or-down drag.
+ *
+ * It used to track the angle of your finger around the ring with atan2, which
+ * is the obvious reading of "dial" and is genuinely hard to use: you have to
+ * describe an arc around a 92 px circle with a thumb that is covering it. A
+ * vertical drag is what rotary controls in audio software have used for
+ * decades, for the same reason. The ring stays as the display - now with a
+ * pointer on it - and the whole travel is a comfortable thumb's length.
+ */
+const DIAL_TRAVEL = 170;   // CSS pixels of drag for the full range
 let dragging = false;
-let dragRef = 0;
+let dragStartY = 0;
 let dragBase = 0;
 
-function angleAt(e) {
-  const r = dial.getBoundingClientRect();
-  const p = e.touches ? e.touches[0] : e;
-  return Math.atan2(p.clientY - (r.top + r.height / 2),
-                    p.clientX - (r.left + r.width / 2));
-}
+function pointerY(e) { return (e.touches ? e.touches[0] : e).clientY; }
 
 function onDown(e) {
+  if (state.locked) return;
   dragging = true;
-  dragRef = angleAt(e);
+  dragStartY = pointerY(e);
   dragBase = state.intensity;
   dial.setPointerCapture?.(e.pointerId);
   e.preventDefault();
 }
 function onMove(e) {
   if (!dragging) return;
-  let d = angleAt(e) - dragRef;
-  while (d > Math.PI) d -= Math.PI * 2;
-  while (d < -Math.PI) d += Math.PI * 2;
-  // Three quarters of a turn spans the full range.
-  setIntensity(dragBase + d / (Math.PI * 1.5), true);
+  setIntensity(dragBase + (dragStartY - pointerY(e)) / DIAL_TRAVEL, true);
   wake();
   e.preventDefault();
 }
@@ -149,7 +155,22 @@ function light() {
   crackle.setLevel(state.intensity, true);
 }
 
-function toggleFlame() { state.lit ? extinguish(null) : light(); }
+function toggleFlame() {
+  if (wax.spent) { freshCandle(); return; }
+  state.lit ? extinguish(null) : light();
+}
+
+/** Replace a burnt-out candle with a new one. */
+function freshCandle() {
+  wax.reset();
+  field.reset();
+  for (let i = 0; i < 600; i++) {
+    field.injectFuel(state.intensity, SUBSTEP);
+    field.step(SUBSTEP);
+  }
+  light();
+  showToast('A fresh candle');
+}
 
 // Tapping the flame itself lights or snuffs it.
 //
@@ -169,6 +190,7 @@ window.addEventListener('pointerdown', () => {
 }, { capture: true });
 
 canvas.addEventListener('pointerdown', (e) => {
+  if (state.locked) return;
   const wasHidden = uiWasHiddenOnPress;
   wake();
   if (wasHidden || state.zen) return;
@@ -179,6 +201,7 @@ canvas.addEventListener('pointerdown', (e) => {
 // ---------------------------------------------------------------- UI plumbing
 let idleTimer = 0;
 function wake() {
+  if (state.locked) return;
   ui.classList.remove('dim');
   clearTimeout(idleTimer);
   if (state.zen) return;
@@ -284,6 +307,38 @@ btn.sound.addEventListener('click', () => {
  * written on the screen is something the user has to read, and being asked to
  * read someone else's chosen words is the opposite of what this mode is for.
  */
+/**
+ * Screen lock.
+ *
+ * Locks out touch entirely and takes the interface away, so the candle can be
+ * left on a desk without a stray brush of the hand changing anything - and so
+ * a screenshot has nothing in it but the candle. Double-tap to unlock, which
+ * is deliberately a gesture no accidental touch produces.
+ */
+btn.lock.addEventListener('click', () => {
+  state.locked = true;
+  press(btn.lock, true);
+  document.body.classList.add('locked');
+  ui.classList.add('dim');
+  showToast('Screen locked. Double-tap to unlock.');
+});
+
+let lastTapAt = 0;
+window.addEventListener('pointerdown', (e) => {
+  if (!state.locked) return;
+  const now = performance.now();
+  if (now - lastTapAt < 400) {
+    state.locked = false;
+    press(btn.lock, false);
+    document.body.classList.remove('locked');
+    lastTapAt = 0;
+    wake();
+    showToast('Unlocked');
+  } else {
+    lastTapAt = now;
+  }
+}, { capture: true });
+
 btn.zen.addEventListener('click', () => {
   state.zen = !state.zen;
   press(btn.zen, state.zen);
@@ -313,6 +368,16 @@ function frame(now) {
 
   air.update(dt);
 
+  // The focus clock is advanced here, every frame, with the full frame time.
+  // It used to be decremented inside the quarter-second display update but
+  // by that update's *own* dt - a single frame - so it discarded about
+  // ninety-four per cent of every interval and ran at roughly a fifteenth of
+  // real speed. On a phone that reads as a timer randomly stalling.
+  if (state.mode === 'focus' && !state.focusPaused) {
+    state.focusLeft = Math.max(0, state.focusLeft - dt * 1000);
+    if (state.focusLeft <= 0) { endFocus('Done.'); buzz([30, 60, 30]); }
+  }
+
   // A hard enough puff strains the flame past the point where the chemistry
   // can keep up. Reading mode shields the flame so a cough does not cost you
   // your page.
@@ -337,6 +402,16 @@ function frame(now) {
   }
 
   wax.update(dt, burn, state.lit);
+
+  // Out of wax. The flame dies, and so does everything that belonged to it -
+  // including the crackle, which used to carry on over an empty screen
+  // because its level was only ever set when the flame was toggled by hand.
+  if (wax.spent && state.lit) {
+    extinguish(null);
+    showToast('The candle has burned out. Tap the wick for a new one.');
+  }
+  if (state.sound) crackle.setLevel(state.intensity, state.lit && !wax.spent);
+
   renderer.draw(state);
   updateReadout(dt);
   adaptQuality(dt);
@@ -400,11 +475,9 @@ function updateReadout(dt) {
   syncHostBrightness();
 
   if (state.mode === 'focus') {
-    if (!state.focusPaused) state.focusLeft = Math.max(0, state.focusLeft - dt * 1000);
     const m = Math.floor(state.focusLeft / 60000);
     const sec = Math.floor((state.focusLeft % 60000) / 1000);
     timerText.textContent = `${m}:${String(sec).padStart(2, '0')}`;
-    if (state.focusLeft <= 0) { endFocus('Done.'); buzz([30, 60, 30]); }
   }
 
   if (state.zen || state.mode === 'reading') { readout.textContent = ''; return; }

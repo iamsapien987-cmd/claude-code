@@ -75,6 +75,55 @@ const f2 = await flamePoint();
 await tap(f2.x, f2.y);
 check('tap on the flame snuffs it', await lit() === false, `at (${f2.x.toFixed(0)}, ${f2.y.toFixed(0)})`);
 
+// 4. The dial responds to a vertical drag, and its pointer follows.
+await relight();
+await page.evaluate(() => window.__candle.setIntensity(0.5));
+const dial = await page.locator('#dial').boundingBox();
+const cx = dial.x + dial.width / 2;
+const cy = dial.y + dial.height / 2;
+const readDial = () => page.evaluate(() => ({
+  v: window.__candle.state.intensity,
+  angle: document.getElementById('dial').style.getPropertyValue('--angle'),
+}));
+
+const before = await readDial();
+// Drag upward: brighter.
+await page.touchscreen.tap(cx, cy);   // wake the interface
+await page.waitForTimeout(200);
+await page.mouse.move(cx, cy);
+await page.mouse.down();
+await page.mouse.move(cx, cy - 60, { steps: 8 });
+await page.mouse.up();
+await page.waitForTimeout(200);
+const up = await readDial();
+check('dragging the dial up raises the flame', up.v > before.v + 0.2,
+  `${before.v.toFixed(2)} -> ${up.v.toFixed(2)}`);
+check('the pointer moves with it', up.angle !== before.angle, `${before.angle} -> ${up.angle}`);
+
+// Drag downward: dimmer.
+await page.mouse.move(cx, cy);
+await page.mouse.down();
+await page.mouse.move(cx, cy + 60, { steps: 8 });
+await page.mouse.up();
+await page.waitForTimeout(200);
+const down = await readDial();
+check('dragging the dial down lowers the flame', down.v < up.v - 0.2,
+  `${up.v.toFixed(2)} -> ${down.v.toFixed(2)}`);
+
+// 5. Screen lock blocks input and hides everything; double-tap releases it.
+await relight();
+await page.click('#btnLock');
+await page.waitForTimeout(400);
+check('locking hides the interface', await uiHidden());
+const f3 = await flamePoint();
+await tap(f3.x, f3.y);
+check('a tap while locked does nothing', await lit() === true);
+await page.touchscreen.tap(200, 400);
+await page.waitForTimeout(80);
+await page.touchscreen.tap(200, 400);
+await page.waitForTimeout(400);
+check('double-tap unlocks', await page.evaluate(() => window.__candle.state.locked) === false);
+
 await browser.close();
 if (errors.length) { console.log('PAGE ERRORS:'); errors.slice(0, 5).forEach((e) => console.log('  ', e)); }
 const failed = results.filter((r) => !r.pass).length;
