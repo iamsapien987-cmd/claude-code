@@ -190,16 +190,13 @@ of the simulated volume.
 
 ## 7. Open issues
 
-1. **Microphone `NotReadableError`** — permission is granted (the prompt now
-   appears correctly), but the device won't open. Two fixes attempted:
-   (a) acquiring the OS permission *before* `getUserMedia` rather than during
-   it, which fixed the prompt timing; (b) a 450 ms settle after resume plus
-   three backoff retries, because `onResume` was delivering the answer in the
-   same instant the audio stack was still coming up. **Untested as of writing.**
-   Hold the mic button for a diagnostics readout — added specifically so the
-   next failure produces data instead of another inferred guess.
-   Note: the device is Xiaomi/MIUI, which has its own privacy layer that can
-   hand back a silent stream even after permission is granted.
+1. **Microphone `NotReadableError`** — three fixes attempted, the first two
+   disproved by the device's own diagnostics (see the progress log). Permission
+   is granted and the context is secure; the device still will not open.
+   Current attempt falls back from unprocessed to plain capture constraints.
+   Untested. Hold the mic button for the readout: `audio inputs: 0` would mean
+   the problem is upstream of this app (MIUI privacy layer), and a success on
+   `plain` confirms the constraints were unsatisfiable.
 2. **Flame shape** — see §5. Deferred by the user to last.
 3. **25-minute timer run** — not yet completed end to end.
 
@@ -252,6 +249,42 @@ Added: screen lock, renamed to Real Candle, `tools/tap-check.mjs` (14 checks,
 in CI).
 
 Still open: the microphone, and the flame's shape.
+
+### 2026-08-30 — microphone: two theories disproved by the device
+
+The diagnostics readout added for this purpose earned itself immediately.
+The device reported:
+
+```
+error: NotReadableError   attempts: 4
+OS permission: granted    secure context: yes
+```
+
+Four attempts across three seconds, permission genuinely held, proper secure
+origin. That **rules out** the first two fixes, both of which were aimed at
+causes inferred from the error name alone:
+
+1. Permission acquired during `getUserMedia` rather than before it — real, and
+   fixed the prompt timing, but not the cause of this.
+2. The WebView audio stack not settled after resume — plausible, and wrong.
+   Four spaced attempts kill it.
+
+Current theory, and the reason it is more than a guess: the app requests
+`echoCancellation: false, noiseSuppression: false, autoGainControl: false`,
+because noise suppression removes exactly the sound of a blown breath. Many
+Android devices cannot disable those processors — there is no raw path through
+the driver — and an unsatisfiable request fails to open the device at all,
+which surfaces as `NotReadableError` and reads like a hardware fault.
+
+`enableMic` now walks a ladder of requests: raw, raw again, plain
+`{audio: true}`, plain again. A processed stream still detects a puff,
+attenuated rather than absent, so the detection floor moves with it. The
+diagnostics also now report the audio-input count the WebView can see and
+which request shape was last tried.
+
+**Untested on the device as of writing.** If it fails again, `audio inputs: 0`
+would point upstream of this app entirely — MIUI's privacy layer is the
+suspect — while a success on `plain` confirms the constraint theory.
 
 ### 2026-08-30 — lessons that changed how the work is checked
 

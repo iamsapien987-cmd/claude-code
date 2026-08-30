@@ -1846,6 +1846,15 @@ class AirModel {
   async enableMic() {
     if (this.analyser) return true;
 
+    // How many audio inputs does the WebView believe exist? If this is zero
+    // the problem is upstream of anything this app is asking for.
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      this.inputCount = devices.filter((d) => d.kind === 'audioinput').length;
+    } catch (e) {
+      this.inputCount = -1;
+    }
+
     // The OS permission is acquired *before* getUserMedia, never during it.
     // Asking from inside the getUserMedia call pauses the activity, which
     // suspends the WebView and tears the media stack down under the in-flight
@@ -1856,24 +1865,34 @@ class AirModel {
       return false;
     }
 
-    const constraints = {
-      audio: {
-        echoCancellation: false,
-        noiseSuppression: false,   // noise suppression removes exactly the
-        autoGainControl: false,    // signal we are looking for
-      },
-    };
-
-    // Backoff between attempts. A microphone that has just been released, or
-    // an audio stack still coming up after the permission dialog, needs longer
-    // than one short retry allowed for.
-    const BACKOFF_MS = [350, 900, 1800];
+    // Ask for the ideal capture first, then fall back.
+    //
+    // Turning off echo cancellation, noise suppression and gain control is
+    // what makes a blown breath detectable - noise suppression is designed to
+    // remove exactly that. But many Android devices cannot disable them: there
+    // is no raw path through the audio driver, and asking for one fails to
+    // open the device at all. That comes back as NotReadableError, which reads
+    // like a hardware fault and is really an unsatisfiable request.
+    //
+    // A working microphone with processing applied still detects a puff; it is
+    // attenuated, not gone. So a plain request is tried next, and a
+    // deliberately un-processed voice-style capture after that.
+    const ATTEMPTS = [
+      { label: 'raw', wait: 0, constraints: { audio: {
+        echoCancellation: false, noiseSuppression: false, autoGainControl: false } } },
+      { label: 'raw retry', wait: 400, constraints: { audio: {
+        echoCancellation: false, noiseSuppression: false, autoGainControl: false } } },
+      { label: 'plain', wait: 300, constraints: { audio: true } },
+      { label: 'plain retry', wait: 900, constraints: { audio: true } },
+    ];
     this.micAttempts = 0;
 
-    for (let attempt = 0; attempt < BACKOFF_MS.length + 1; attempt++) {
+    for (const step of ATTEMPTS) {
+      if (step.wait) await new Promise((r) => setTimeout(r, step.wait));
       try {
-        this.micAttempts = attempt + 1;
-        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        this.micAttempts += 1;
+        this.micMode = step.label;
+        const stream = await navigator.mediaDevices.getUserMedia(step.constraints);
         const Ctx = window.AudioContext || window.webkitAudioContext;
         this.audioCtx = this.audioCtx || new Ctx();
         if (this.audioCtx.state === 'suspended') await this.audioCtx.resume();
@@ -1885,24 +1904,19 @@ class AirModel {
         this.analyser = analyser;
         this.stream = stream;
         this.bins = new Float32Array(analyser.frequencyBinCount);
+        // Processing left on costs sensitivity, so the threshold is relaxed
+        // to compensate rather than the feature being quietly useless.
+        this.processed = step.label.startsWith('plain');
         this.micReady = true;
         this.micError = null;
         return true;
       } catch (err) {
-        const name = (err && err.name) || 'unavailable';
-        this.micError = name;
-        // NotReadableError means the permission was fine but the hardware
-        // would not start - usually because something else is holding the
-        // microphone, or it has just been released and has not settled. One
-        // retry after a short pause clears the transient case.
-        // NotReadableError means the permission was fine but the device would
-        // not open: something else is holding it, or it has not settled yet.
-        // Anything else is final and retrying only delays the message.
-        if (name === 'NotReadableError' && attempt < BACKOFF_MS.length) {
-          await new Promise((r) => setTimeout(r, BACKOFF_MS[attempt]));
-          continue;
+        this.micError = (err && err.name) || 'unavailable';
+        // Only a device that would not open is worth another shape of
+        // request. Anything else is final.
+        if (this.micError !== 'NotReadableError' && this.micError !== 'OverconstrainedError') {
+          return false;
         }
-        return false;
       }
     }
     return false;
@@ -1936,7 +1950,11 @@ class AirModel {
 
     // A puff is loud low down and comparatively quiet up top.
     const ratio = low / (high + 1e-6);
-    const level = Math.max(0, (low - 0.0016) * 240);
+    // A stream with noise suppression and gain control left on delivers far
+    // less of a breath than a raw one, so the floor moves with it.
+    const floor = this.processed ? 0.0007 : 0.0016;
+    const gain = this.processed ? 420 : 240;
+    const level = Math.max(0, (low - floor) * gain);
     const isBreath = ratio > 2.2 ? 1 : Math.max(0, (ratio - 1.1) / 1.1);
     const target = Math.min(1, level * isBreath);
     // Rise fast, fall slowly: a flame keeps moving after the puff stops.
@@ -1966,6 +1984,8 @@ function micDiagnostics(air) {
   const lines = [];
   lines.push(`error: ${air.micError || 'none'}`);
   lines.push(`attempts: ${air.micAttempts || 0}`);
+  lines.push(`last mode: ${air.micMode || 'none'}`);
+  lines.push(`audio inputs: ${air.inputCount === undefined ? 'unknown' : air.inputCount}`);
   lines.push(`native shell: ${host ? 'yes' : 'no'}`);
   if (host && typeof host.hasMicPermission === 'function') {
     try {
@@ -2999,7 +3019,7 @@ btn.mic.addEventListener('click', async () => {
   const why = {
     'permission refused': 'Microphone permission was declined. Allow it in Settings to blow the candle out.',
     NotAllowedError: 'Microphone permission was declined. Allow it in Settings to blow the candle out.',
-    NotReadableError: 'The microphone would not open. Close any app that might be using it, then try again. Hold this button for details.',
+    NotReadableError: 'This phone would not open the microphone for the app. Hold this button for details and send them on.',
     NotFoundError: 'No microphone found on this device.',
   }[air.micError];
   showToast(why || `Microphone unavailable (${air.micError})`);
