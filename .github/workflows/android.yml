@@ -1,0 +1,80 @@
+# Build the APK on GitHub's runners.
+#
+# The development container has no route to dl.google.com, so it can neither
+# fetch the Android SDK nor the Android Gradle Plugin. GitHub's Ubuntu runners
+# ship the SDK preinstalled and have unrestricted network, so the build
+# happens here instead of on anybody's laptop. Every push produces a
+# downloadable APK, and the run log is the compiler output.
+
+name: Android
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  web:
+    name: Simulation checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci || npm install
+      - name: Physics invariants
+        run: node --test "test/*.test.mjs"
+      - name: Build the single-file bundle
+        run: node tools/build.mjs
+      - name: Check the built page runs, and that the panel stays black
+        run: |
+          node tools/verify-bundle.mjs
+          I=1.0 node tools/oled.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candle-html
+          path: dist/candle.html
+
+  apk:
+    name: APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Rebuild the bundle rather than trusting the copy in assets, so the APK
+      # can never ship a page that is behind the sources.
+      - name: Build the web bundle into assets
+        run: node tools/build.mjs
+
+      - name: Fail if the committed asset was stale
+        run: |
+          if ! git diff --quiet -- android/app/src/main/assets/candle.html; then
+            echo "::warning::android assets/candle.html was out of date and has been rebuilt"
+            git --no-pager diff --stat -- android/app/src/main/assets/candle.html
+          fi
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Assemble debug APK
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Report APK size
+        run: ls -lh android/app/build/outputs/apk/debug/*.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candle-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
