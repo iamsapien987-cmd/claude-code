@@ -13,7 +13,7 @@ for (const arg of process.argv.slice(2)) {
   if (v !== undefined) over[k] = Number(v);
 }
 console.log(Object.keys(over).length ? Object.entries(over).map(([k, v]) => `${k}=${v}`).join(' ') : '(defaults)');
-console.log('  I   height mm    width    emission   peak K   maxZ');
+console.log('  I   height mm    width    emission   peak K   maxFuel');
 
 for (const I of [0, 0.25, 0.5, 0.75, 1.0]) {
   const f = new FlameField(40, 100, 0.024 / 40);
@@ -36,7 +36,7 @@ for (const I of [0, 0.25, 0.5, 0.75, 1.0]) {
       W.push(w * f.h * 1000);
       for (let k = 0; k < f.T.length; k++) {
         if (f.T[k] > peak) peak = f.T[k];
-        if (f.Z[k] > maxZ) maxZ = f.Z[k];
+        if (f.fuel[k] > maxZ) maxZ = f.fuel[k];
       }
     }
   }

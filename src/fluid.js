@@ -18,7 +18,7 @@
  */
 
 import {
-  G, T_AMBIENT, T_SOOT_IGNITION, T_ADIABATIC, Z_STOICH,
+  G, T_AMBIENT, T_SOOT_IGNITION, T_ADIABATIC, STOICH_RATIO,
   D_MASS, ALPHA_THERMAL, D_SOOT,
 } from './constants.js';
 
@@ -27,7 +27,7 @@ import {
  * molten wax feeding it is a few millimetres across, which on this grid is
  * about five cells.
  */
-export const WICK_CELLS = 2.5;
+export const WICK_CELLS = 5.0;
 
 /**
  * Ceiling on the prescribed divergence, 1/s. The projection is solved with a
@@ -35,6 +35,13 @@ export const WICK_CELLS = 2.5;
  * blow the velocity field up.
  */
 const EXPANSION_CLAMP = 260;
+
+/**
+ * How strongly gas-phase fuel outcompetes soot for the available oxygen.
+ * Attacking solid carbon is far slower than burning vapour, so even a little
+ * fuel vapour shields the soot around it.
+ */
+const SOOT_OXYGEN_COMPETITION = 40;
 
 /** Bilinear sample of a scalar field at continuous grid coordinates. */
 function sample(f, nx, ny, x, y) {
@@ -67,16 +74,18 @@ export class FlameField {
 
     this.T = new Float32Array(n).fill(T_AMBIENT); // K
     this.T0 = new Float32Array(n);
+    this.fuel = new Float32Array(n);   // paraffin vapour mass fraction
+    this.fuel0 = new Float32Array(n);
     /**
-     * Mixture fraction: 1 is pure fuel vapour, 0 is untouched room air.
+     * Oxygen, normalised so 1.0 is fresh room air.
      *
-     * It is a conserved scalar - burning rearranges atoms but does not
-     * create or destroy them - so it is simply advected and diffused, with
-     * no source term anywhere except the wick. Everything else about the
-     * flame is read off it.
+     * A candle is a diffusion flame: fuel and air arrive separately and can
+     * only burn where they meet. Tracking the oxygen explicitly is what
+     * confines the reaction to a sheet and leaves a cooler, sooty, fuel-rich
+     * core behind it, instead of a uniformly glowing blob.
      */
-    this.Z = new Float32Array(n);
-    this.Z0 = new Float32Array(n);
+    this.ox = new Float32Array(n).fill(1);
+    this.ox0 = new Float32Array(n);
     this.soot = new Float32Array(n);   // soot volume fraction (arbitrary units)
     this.soot0 = new Float32Array(n);
 
@@ -106,9 +115,11 @@ export class FlameField {
 
     // Tunables with physical meaning.
     this.vorticityEps = 1.15;  // strength of vorticity confinement
-    this.fuelSupply = 1.0;     // mixture fraction at the wick surface
-    this.relaxRate = 150;      // 1/s, how fast T settles onto the flamelet
-    this.sootYield = 9.0;      // 1/s, how fast soot approaches its loading
+    this.fuelBase = 7.0;       // fuel supply with the wick trimmed right down
+    this.fuelRange = 4.5;      // extra supply at the top of the dial's range
+    this.burnRate = 55.0;      // 1/s, reaction rate once fuel and air have met
+    this.heatPerFuel = 7600;   // K per unit fuel fraction burnt
+    this.sootYield = 220;      // how fast soot approaches its loading, per unit fuel
     this.sootMax = 0.32;       // saturated soot loading in a fully rich parcel
     this.sootOxidation = 26;   // 1/s, soot burnout on the lean side of the sheet
     this.coolingRate = 2.5;    // 1/s, loss beyond what diffusion already carries
@@ -120,7 +131,8 @@ export class FlameField {
     // also sets flame height, since the flame closes over at the point where
     // enough air has mixed in to bring Z down to stoichiometric.
     this.wickCells = WICK_CELLS;
-    this.dZ = D_MASS * 2;
+    this.dOx = D_MASS * 2;
+    this.dFuel = D_MASS;
     this.alphaThermal = ALPHA_THERMAL * 2;
     this.expansionGain = 1.0;  // scales the low-Mach expansion term
     this.jacobiIters = 8;
@@ -148,15 +160,14 @@ export class FlameField {
    * @param {number} strength  0..1, how far the dial is turned up
    */
   injectFuel(strength, dt) {
-    const { nx, Z, T, v } = this;
+    const { nx, fuel, T, v } = this;
     const cx = nx / 2;
     // The dial is a wick length. A longer wick exposes more surface, wicks up
     // more molten wax and vaporises more of it, so it feeds a bigger flame -
-    // which is exactly how you adjust a real oil lamp. So the dial sets the
-    // size of the vaporising region, not an abstract "intensity".
-    const radius = this.wickCells * (0.5 + 0.9 * strength);
+    // which is exactly how the wheel on an oil lamp works.
+    const radius = this.wickCells * (0.75 + 0.45 * strength);
     const j0 = 1;
-    const j1 = Math.max(3, Math.round(radius * 1.6));
+    const j1 = Math.max(3, Math.round(radius * 2.6));
     const r2 = radius * radius;
     for (let j = j0; j <= j1; j++) {
       for (let i = 1; i < nx - 1; i++) {
@@ -165,13 +176,11 @@ export class FlameField {
         if (d2 > r2) continue;
         const falloff = (1 - d2 / r2) * (1 - (j - j0) / (j1 - j0 + 1));
         const k = i + j * nx;
-        // The wick surface is saturated fuel vapour, so the mixture fraction
-        // there is pinned near one rather than accumulated over time.
-        const target = this.fuelSupply * falloff;
-        if (Z[k] < target) Z[k] = target;
-        // A lit wick glows at close to flame temperature whatever its
-        // length, and that is what keeps re-igniting the incoming vapour.
-        T[k] = Math.max(T[k], T_AMBIENT + 800 * falloff);
+        fuel[k] += (this.fuelBase + this.fuelRange * strength) * falloff * dt;
+        // A lit wick glows at close to flame temperature whatever its length,
+        // and that is what keeps re-igniting the incoming vapour. Scaling
+        // this with the dial stopped low settings igniting at all.
+        T[k] = Math.max(T[k], T_AMBIENT + (780 + 240 * strength) * falloff);
         // Vaporisation gives the gas only a gentle nudge upward; it is
         // buoyancy, not any jet, that accelerates it to metres per second.
         v[k] += 0.06 * falloff * dt * 60;
@@ -334,19 +343,18 @@ export class FlameField {
   }
 
   /**
-   * The open boundaries are room air, which holds no fuel at all, so the
-   * mixture fraction is pinned to zero there. Everything the flame breathes
-   * is entrained across these edges.
+   * The open boundaries are fresh room air, so oxygen is replenished by
+   * entrainment across them. This is the supply that feeds the flame.
    */
   boundaryAir(f) {
     const { nx, ny } = this;
     for (let j = 0; j < ny; j++) {
-      f[j * nx] = 0;
-      f[nx - 1 + j * nx] = 0;
+      f[j * nx] = 1;
+      f[nx - 1 + j * nx] = 1;
     }
     for (let i = 0; i < nx; i++) {
       f[i] = f[i + nx];                       // wax surface: no flux
-      f[i + (ny - 1) * nx] = 0;
+      f[i + (ny - 1) * nx] = 1;
     }
   }
 
@@ -377,81 +385,60 @@ export class FlameField {
    * produces a lot: the soot survives once the reaction zone is gone.
    */
   react(dt) {
-    const { nx, ny, T, Z, soot, rate } = this;
-    const dTmax = T_ADIABATIC - T_AMBIENT;
-    const relax = Math.min(1, this.relaxRate * dt);
+    const { nx, ny, T, fuel, soot, ox, rate } = this;
+    const ignite = T_AMBIENT + 350;
     let released = 0;
 
     for (let j = 1; j < ny - 1; j++) {
       for (let i = 1; i < nx - 1; i++) {
         const k = i + j * nx;
-        const z = Z[k];
-
-        // --- the flamelet -------------------------------------------------
-        // With chemistry this fast, temperature is a function of mixture
-        // fraction alone. Fuel and air burn out completely where they meet
-        // at Z = Z_st, which is the hottest point; move away in either
-        // direction and the products are diluted, by excess air on one side
-        // and by excess fuel vapour on the other, so the temperature falls
-        // off linearly to ambient at both ends. This is the Burke-Schumann
-        // solution, and its Z = Z_st surface is the closed teardrop that a
-        // candle flame actually is.
-        let Teq = T_AMBIENT;
-        if (z > 1e-5) {
-          const lean = z / Z_STOICH;
-          Teq = T_AMBIENT + dTmax * (z <= Z_STOICH ? lean : (1 - z) / (1 - Z_STOICH));
-        }
-
         const before = T[k];
-        if (Teq > T[k]) {
-          // Heating towards the flamelet temperature is combustion.
-          T[k] += (Teq - T[k]) * relax;
-          released += T[k] - before;
+        const f = fuel[k];
+        const o = ox[k];
+        rate[k] *= 0.72;   // short persistence, so the blue zone is not strobed
+
+        if (f > 1e-5 && o > 1e-4 && T[k] > ignite) {
+          // Whichever of fuel or oxygen runs out first limits the reaction.
+          const limited = Math.min(f, o / STOICH_RATIO);
+          const burnt = limited * Math.min(1, this.burnRate * dt);
+          fuel[k] = f - burnt;
+          ox[k] = o - burnt * STOICH_RATIO;
+          // Heat release cannot push the gas past the adiabatic flame
+          // temperature; that ceiling is set by the chemistry, not by us.
+          T[k] = Math.min(T_ADIABATIC, T[k] + burnt * this.heatPerFuel);
+          rate[k] += burnt;
+          released += burnt;
         }
 
-        // Burning intensity, for the blue reaction zone. A flame sheet
-        // consumes reactants at a rate set by how fast they are being
-        // brought together, so this peaks where Z is near stoichiometric and
-        // the mixture fraction gradient is steep.
-        const near = (z - Z_STOICH) / (0.9 * Z_STOICH);
-        const chi = Math.abs(Z[k + 1] - Z[k - 1]) + Math.abs(Z[k + nx] - Z[k - nx]);
-        rate[k] = Math.exp(-near * near) * chi;
-
-        // --- soot ------------------------------------------------------
-        // Soot is formed by pyrolysis on the rich side of the sheet, where
-        // fuel vapour is cooking without enough oxygen to burn cleanly, and
-        // is consumed again as it crosses to the lean side. The rich side is
-        // the whole interior of the flame, which is why the body of a candle
-        // flame glows yellow rather than only its surface.
-        if (T[k] > T_SOOT_IGNITION) {
-          if (z > Z_STOICH) {
-            // Soot inception saturates: only so much of the carbon in a given
-            // parcel can end up as particles, so this relaxes towards an
-            // equilibrium loading set by how rich the parcel is rather than
-            // integrating upward without limit.
-            const rich = Math.min(1, (z - Z_STOICH) / (0.22 - Z_STOICH));
-            soot[k] += (this.sootMax * rich - soot[k]) * this.sootYield * dt;
-          } else {
-            // Past the tip and outside the sheet there is oxygen to spare.
-            const leanness = 1 - z / Z_STOICH;
-            soot[k] *= Math.max(0, 1 - this.sootOxidation * leanness * dt);
-          }
-        } else {
-          soot[k] *= Math.max(0, 1 - 0.25 * dt);
+        // Soot forms by pyrolysis on the fuel-rich side of the flame sheet.
+        if (fuel[k] > 1e-4 && T[k] > T_SOOT_IGNITION) {
+          soot[k] += (this.sootMax - soot[k]) * fuel[k] * this.sootYield * dt;
+        }
+        if (soot[k] > 0) {
+          // Soot burns in whatever oxygen is left once the far faster
+          // gas-phase reaction has taken its share. Deep in the fuel-rich
+          // core almost none is left, so soot survives and the body of the
+          // flame glows; near the tip the fuel is spent, the leftover
+          // fraction rises sharply and the soot is consumed. That burnout is
+          // what tapers a flame to a point - and why a healthy candle does
+          // not smoke while a freshly blown-out one does.
+          const competing = STOICH_RATIO * fuel[k] * SOOT_OXYGEN_COMPETITION;
+          const leftover = ox[k] / (ox[k] + competing + 1e-6);
+          const base = T[k] > T_SOOT_IGNITION ? this.sootOxidation : 0.3;
+          soot[k] *= Math.max(0, 1 - base * leftover * dt);
         }
 
-        // --- losses ----------------------------------------------------
-        // Radiation is what makes a flame tip cooler than the adiabatic
-        // value, and it scales steeply enough with temperature that it only
-        // bites in the hottest part.
+        // Convective loss plus a radiative term. Radiation scales steeply
+        // enough with temperature that it only bites in the hottest part,
+        // which is what makes the tip cooler than the adiabatic value.
         const dT = T[k] - T_AMBIENT;
         if (dT > 0) {
           const rad = this.radiativeCooling * dT * dT * dT;
           T[k] = T_AMBIENT + dT * Math.max(0, 1 - (this.coolingRate + rad) * dt);
         }
 
-        // Expansion from the net temperature change over this step. Cooling
-        // contributes a contraction, which is equally real.
+        // Net expansion over the step. Cooling contributes a contraction,
+        // which is equally real.
         const growth = (T[k] - before) / (before * dt);
         this.expand[k] = Math.max(-EXPANSION_CLAMP,
                                   Math.min(EXPANSION_CLAMP, growth * this.expansionGain));
@@ -474,18 +461,22 @@ export class FlameField {
     this.project();
 
     this.T0.set(this.T);
-    this.Z0.set(this.Z);
+    this.fuel0.set(this.fuel);
+    this.ox0.set(this.ox);
     this.soot0.set(this.soot);
     this.advect(this.T, this.T0, dt);
-    this.advect(this.Z, this.Z0, dt);
+    this.advect(this.fuel, this.fuel0, dt);
+    this.advect(this.ox, this.ox0, dt);
     this.advect(this.soot, this.soot0, dt);
     this.diffuse(this.T, this.alphaThermal, dt);
-    this.diffuse(this.Z, this.dZ, dt);
+    this.diffuse(this.fuel, this.dFuel, dt);
+    this.diffuse(this.ox, this.dOx, dt);
     this.diffuse(this.soot, D_SOOT, dt);
 
     this.boundaryScalar(this.T);
+    this.boundaryScalar(this.fuel);
     this.boundaryScalar(this.soot);
-    this.boundaryAir(this.Z);
+    this.boundaryAir(this.ox);
 
     this.react(dt);
   }
@@ -525,7 +516,8 @@ export class FlameField {
   reset() {
     this.u.fill(0); this.v.fill(0);
     this.T.fill(T_AMBIENT);
-    this.Z.fill(0); this.soot.fill(0);
+    this.fuel.fill(0); this.soot.fill(0);
+    this.ox.fill(1);
     this.rate.fill(0);
     this.expand.fill(0);
     this.p.fill(0);

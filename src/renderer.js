@@ -35,6 +35,14 @@ const WAX_SCATTER_LENGTH = 0.006;
  */
 const EMISSION_REF = 20000;
 
+/**
+ * Converts illuminance in the model's units to screen alpha. Set so a candle
+ * at full tilt lights its immediate surroundings strongly and falls to almost
+ * nothing by the edge of the frame, which is roughly what one candle does to
+ * a dark room.
+ */
+const ROOM_LIGHT_GAIN = 7.5e-4;
+
 export class Renderer {
   constructor(canvas, field, wax) {
     this.canvas = canvas;
@@ -131,7 +139,7 @@ export class Renderer {
     const lum = this.luminance() * LUMINOUS_INTENSITY;
     if (lum <= 0.001) return;
 
-    const reach = Math.max(w, h) * 1.6;
+    const reach = Math.max(w, h) * 1.25;
     const g = ctx.createRadialGradient(fx, fy, 0, fx, fy, reach);
     const [r, gr, b] = ROOM_RGB;
 
@@ -147,14 +155,16 @@ export class Renderer {
     // crossover at the flame's own height, which is what a real candle's
     // pool of light looks like.
     const L = FLAME_HEIGHT;
-    const STOPS = 14;
+    const STOPS = 24;
+    // Gradient position maps to true distance in metres, so the falloff drawn
+    // on screen is the falloff the model describes rather than a curve fitted
+    // to the viewport.
+    const span = reach / this.scale;
     for (let i = 0; i <= STOPS; i++) {
       const s = i / STOPS;
-      // Sample the curve on a square law so the near field, where all the
-      // interesting variation is, gets most of the gradient stops.
-      const d = 0.012 + s * s * this.viewHeight * 2.2;   // metres from the flame
+      const d = 0.012 + s * span;                      // metres from the flame
       const e = lum / (d * (d + L));
-      const a = Math.min(0.80, e * 0.0072);
+      const a = Math.min(0.62, e * ROOM_LIGHT_GAIN);
       g.addColorStop(s, `rgba(${r}, ${gr}, ${b}, ${a.toFixed(4)})`);
     }
     ctx.globalCompositeOperation = 'lighter';
@@ -239,13 +249,17 @@ export class Renderer {
       const v = 0.10 + 0.62 * Math.pow(n, 0.85);
       return v;
     };
+    // Unlit paraffin is a warm off-white, and the only light falling on it
+    // comes from a 1850 K flame. Shading it with neutral greys made it read
+    // as grey plastic; multiplying the wax's own albedo by the colour of the
+    // light actually illuminating it is what makes it read as wax.
+    const albedo = [0.96, 0.91, 0.80];
     for (let i = 0; i <= 10; i++) {
       const s = i / 10;
       const v = shade(s * 2 - 1) * lum;
-      const r = Math.round(255 * Math.min(1, v * 1.00));
-      const gg = Math.round(255 * Math.min(1, v * 0.93));
-      const b = Math.round(255 * Math.min(1, v * 0.80));
-      g.addColorStop(s, `rgb(${r}, ${gg}, ${b})`);
+      const c = [0, 1, 2].map((ch) =>
+        Math.round(255 * Math.min(1, v * albedo[ch] * (0.45 + 0.55 * ROOM_RGB[ch] / 255))));
+      g.addColorStop(s, `rgb(${c[0]}, ${c[1]}, ${c[2]})`);
     }
     ctx.fillStyle = g;
     this.bodyPath(ctx);
