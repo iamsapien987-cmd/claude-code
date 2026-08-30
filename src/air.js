@@ -72,32 +72,90 @@ export class AirModel {
    * music, which have structure higher up. Comparing the two bands separates
    * a real puff from someone talking near the phone.
    */
+  /**
+   * Ask the native shell for the OS microphone permission, if there is one.
+   *
+   * Resolves true when the app may use the microphone. In a plain browser
+   * there is no shell and this is a no-op: the browser's own prompt happens
+   * inside getUserMedia as usual.
+   */
+  async ensureHostPermission() {
+    const host = window.CandleHost;
+    if (!host || typeof host.requestMicPermission !== 'function') return true;
+    try {
+      if (host.hasMicPermission()) return true;
+    } catch (e) {
+      return true;   // older shell without the check; let getUserMedia try
+    }
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = (ok) => {
+        if (settled) return;
+        settled = true;
+        window.__candleMicPermission = null;
+        resolve(ok);
+      };
+      window.__candleMicPermission = (granted) => done(granted === true || granted === 'true');
+      // If the dialog is dismissed without an answer we would otherwise wait
+      // forever, so give up rather than leaving the button stuck.
+      setTimeout(() => done(false), 90000);
+      try { host.requestMicPermission(); } catch (e) { done(false); }
+    });
+  }
+
   async enableMic() {
     if (this.analyser) return true;
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: false,
-          noiseSuppression: false,   // noise suppression removes exactly the
-          autoGainControl: false,    // signal we are looking for
-        },
-      });
-      const Ctx = window.AudioContext || window.webkitAudioContext;
-      this.audioCtx = this.audioCtx || new Ctx();
-      const src = this.audioCtx.createMediaStreamSource(stream);
-      const analyser = this.audioCtx.createAnalyser();
-      analyser.fftSize = 1024;
-      analyser.smoothingTimeConstant = 0.35;
-      src.connect(analyser);
-      this.analyser = analyser;
-      this.stream = stream;
-      this.bins = new Float32Array(analyser.frequencyBinCount);
-      this.micReady = true;
-      return true;
-    } catch (err) {
-      this.micError = err && err.name ? err.name : 'unavailable';
+
+    // The OS permission is acquired *before* getUserMedia, never during it.
+    // Asking from inside the getUserMedia call pauses the activity, which
+    // suspends the WebView and tears the media stack down under the in-flight
+    // request; it came back as NotReadableError on a real device.
+    const permitted = await this.ensureHostPermission();
+    if (!permitted) {
+      this.micError = 'permission refused';
       return false;
     }
+
+    const constraints = {
+      audio: {
+        echoCancellation: false,
+        noiseSuppression: false,   // noise suppression removes exactly the
+        autoGainControl: false,    // signal we are looking for
+      },
+    };
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        this.audioCtx = this.audioCtx || new Ctx();
+        if (this.audioCtx.state === 'suspended') await this.audioCtx.resume();
+        const src = this.audioCtx.createMediaStreamSource(stream);
+        const analyser = this.audioCtx.createAnalyser();
+        analyser.fftSize = 1024;
+        analyser.smoothingTimeConstant = 0.35;
+        src.connect(analyser);
+        this.analyser = analyser;
+        this.stream = stream;
+        this.bins = new Float32Array(analyser.frequencyBinCount);
+        this.micReady = true;
+        this.micError = null;
+        return true;
+      } catch (err) {
+        const name = (err && err.name) || 'unavailable';
+        this.micError = name;
+        // NotReadableError means the permission was fine but the hardware
+        // would not start - usually because something else is holding the
+        // microphone, or it has just been released and has not settled. One
+        // retry after a short pause clears the transient case.
+        if (name === 'NotReadableError' && attempt === 0) {
+          await new Promise((r) => setTimeout(r, 400));
+          continue;
+        }
+        return false;
+      }
+    }
+    return false;
   }
 
   disableMic() {

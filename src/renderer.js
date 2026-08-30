@@ -98,7 +98,8 @@ export class Renderer {
     this.midCtx = this.mid.getContext('2d');
 
     this.dpr = 1;
-    this.smoothed = 0;   // low-passed emission, drives the room light
+    this.smoothed = 0;                   // low-passed emission, drives the room light
+    this.lastFlameHeight = FLAME_HEIGHT;  // metres, kept for tap hit testing
     this.resize();
   }
 
@@ -135,6 +136,27 @@ export class Renderer {
     this.mid.height = Math.max(64, Math.round(this.field.ny * 4));
   }
 
+  /**
+   * Is this point, in CSS pixels, on the flame?
+   *
+   * Used for tap-to-snuff. The region is derived from where the flame
+   * actually is rather than from a fixed fraction of the screen, so it
+   * follows the flame as it grows with the dial and descends as the candle
+   * burns down. Padded enough to be hittable with a thumb and no more.
+   */
+  flameHitTest(cssX, cssY) {
+    const d = this.dpr;
+    const wick = this.wax.wickTop || 0;
+    const top = this.py(wick + this.lastFlameHeight) / d;
+    const bottom = this.py(wick) / d;
+    const cx = this.cx / d;
+    const halfW = Math.max(26, (bottom - top) * 0.32);
+    const pad = 14;
+    return Math.abs(cssX - cx) < halfW + pad
+      && cssY > top - pad
+      && cssY < bottom + pad;
+  }
+
   /** World metres (x from candle centre, y up from the base) to canvas pixels. */
   px(x) { return this.cx + x * this.scale; }
   py(y) { return this.baseY - y * this.scale; }
@@ -145,6 +167,8 @@ export class Renderer {
     // The room light must not strobe on single-frame noise, but it does have
     // to carry the flame's real flicker, so smooth it only lightly.
     this.smoothed += (emission - this.smoothed) * 0.35;
+    // Kept for hit testing, so a tap can find the flame where it is now.
+    this.lastFlameHeight = this.field.flameHeight();
 
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, w, h);

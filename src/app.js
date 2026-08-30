@@ -152,14 +152,28 @@ function light() {
 function toggleFlame() { state.lit ? extinguish(null) : light(); }
 
 // Tapping the flame itself lights or snuffs it.
+//
+// Two rules, both learned from getting this wrong. The first version tested a
+// fixed band across the middle of the screen, which covered about a third of
+// it, so almost any tap put the candle out. And it ran even while the
+// controls were hidden, which meant the tap you make to bring them back also
+// snuffed the flame. So: while the interface is hidden a tap only wakes it,
+// and otherwise the target is the flame itself, wherever it currently is.
+// Snapshot taken in the capture phase, before anything else can react to the
+// press. Reading the state inside the handler itself is too late: a
+// pointermove arrives first on a mouse or stylus, wakes the interface, and
+// the tap then looks like it happened on a visible interface.
+let uiWasHiddenOnPress = false;
+window.addEventListener('pointerdown', () => {
+  uiWasHiddenOnPress = ui.classList.contains('dim');
+}, { capture: true });
+
 canvas.addEventListener('pointerdown', (e) => {
+  const wasHidden = uiWasHiddenOnPress;
   wake();
+  if (wasHidden || state.zen) return;
   const r = canvas.getBoundingClientRect();
-  const x = e.clientX - r.left;
-  const y = e.clientY - r.top;
-  const near = Math.abs(x - r.width / 2) < r.width * 0.28
-    && y > r.height * 0.18 && y < r.height * 0.72;
-  if (near) toggleFlame();
+  if (renderer.flameHitTest(e.clientX - r.left, e.clientY - r.top)) toggleFlame();
 });
 
 // ---------------------------------------------------------------- UI plumbing
@@ -189,8 +203,15 @@ btn.mic.addEventListener('click', async () => {
   showToast('Allow the microphone, then blow at your phone');
   const ok = await air.enableMic();
   press(btn.mic, ok);
-  showToast(ok ? 'Blow at your phone to put it out'
-               : `Microphone unavailable (${air.micError})`);
+  if (ok) { showToast('Blow at your phone to put it out'); return; }
+  // Say what to do about it, not just what the API called it.
+  const why = {
+    'permission refused': 'Microphone permission was declined. Allow it in Settings to blow the candle out.',
+    NotAllowedError: 'Microphone permission was declined. Allow it in Settings to blow the candle out.',
+    NotReadableError: 'Another app is using the microphone. Close it and try again.',
+    NotFoundError: 'No microphone found on this device.',
+  }[air.micError];
+  showToast(why || `Microphone unavailable (${air.micError})`);
 });
 
 // Focus timer. Leaving the app snuffs the candle, which is the whole point.

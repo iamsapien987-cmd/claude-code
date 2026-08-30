@@ -125,6 +125,7 @@ node tools/calibrate.mjs        # flame size and temperature across the dial
 node tools/flamepic.mjs 0.7 6 shots/f.ppm   # flame shape, no browser needed
 node tools/shoot.mjs            # the whole app at phone size
 node tools/verify-bundle.mjs    # the built file, loaded as a phone would
+node tools/tap-check.mjs        # tap targets, with a real touchscreen
 ```
 
 `tools/calibrate.mjs` takes arbitrary overrides — `node tools/calibrate.mjs

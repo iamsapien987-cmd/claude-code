@@ -1756,32 +1756,90 @@ class AirModel {
    * music, which have structure higher up. Comparing the two bands separates
    * a real puff from someone talking near the phone.
    */
+  /**
+   * Ask the native shell for the OS microphone permission, if there is one.
+   *
+   * Resolves true when the app may use the microphone. In a plain browser
+   * there is no shell and this is a no-op: the browser's own prompt happens
+   * inside getUserMedia as usual.
+   */
+  async ensureHostPermission() {
+    const host = window.CandleHost;
+    if (!host || typeof host.requestMicPermission !== 'function') return true;
+    try {
+      if (host.hasMicPermission()) return true;
+    } catch (e) {
+      return true;   // older shell without the check; let getUserMedia try
+    }
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = (ok) => {
+        if (settled) return;
+        settled = true;
+        window.__candleMicPermission = null;
+        resolve(ok);
+      };
+      window.__candleMicPermission = (granted) => done(granted === true || granted === 'true');
+      // If the dialog is dismissed without an answer we would otherwise wait
+      // forever, so give up rather than leaving the button stuck.
+      setTimeout(() => done(false), 90000);
+      try { host.requestMicPermission(); } catch (e) { done(false); }
+    });
+  }
+
   async enableMic() {
     if (this.analyser) return true;
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: false,
-          noiseSuppression: false,   // noise suppression removes exactly the
-          autoGainControl: false,    // signal we are looking for
-        },
-      });
-      const Ctx = window.AudioContext || window.webkitAudioContext;
-      this.audioCtx = this.audioCtx || new Ctx();
-      const src = this.audioCtx.createMediaStreamSource(stream);
-      const analyser = this.audioCtx.createAnalyser();
-      analyser.fftSize = 1024;
-      analyser.smoothingTimeConstant = 0.35;
-      src.connect(analyser);
-      this.analyser = analyser;
-      this.stream = stream;
-      this.bins = new Float32Array(analyser.frequencyBinCount);
-      this.micReady = true;
-      return true;
-    } catch (err) {
-      this.micError = err && err.name ? err.name : 'unavailable';
+
+    // The OS permission is acquired *before* getUserMedia, never during it.
+    // Asking from inside the getUserMedia call pauses the activity, which
+    // suspends the WebView and tears the media stack down under the in-flight
+    // request; it came back as NotReadableError on a real device.
+    const permitted = await this.ensureHostPermission();
+    if (!permitted) {
+      this.micError = 'permission refused';
       return false;
     }
+
+    const constraints = {
+      audio: {
+        echoCancellation: false,
+        noiseSuppression: false,   // noise suppression removes exactly the
+        autoGainControl: false,    // signal we are looking for
+      },
+    };
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        this.audioCtx = this.audioCtx || new Ctx();
+        if (this.audioCtx.state === 'suspended') await this.audioCtx.resume();
+        const src = this.audioCtx.createMediaStreamSource(stream);
+        const analyser = this.audioCtx.createAnalyser();
+        analyser.fftSize = 1024;
+        analyser.smoothingTimeConstant = 0.35;
+        src.connect(analyser);
+        this.analyser = analyser;
+        this.stream = stream;
+        this.bins = new Float32Array(analyser.frequencyBinCount);
+        this.micReady = true;
+        this.micError = null;
+        return true;
+      } catch (err) {
+        const name = (err && err.name) || 'unavailable';
+        this.micError = name;
+        // NotReadableError means the permission was fine but the hardware
+        // would not start - usually because something else is holding the
+        // microphone, or it has just been released and has not settled. One
+        // retry after a short pause clears the transient case.
+        if (name === 'NotReadableError' && attempt === 0) {
+          await new Promise((r) => setTimeout(r, 400));
+          continue;
+        }
+        return false;
+      }
+    }
+    return false;
   }
 
   disableMic() {
@@ -2056,7 +2114,8 @@ class Renderer {
     this.midCtx = this.mid.getContext('2d');
 
     this.dpr = 1;
-    this.smoothed = 0;   // low-passed emission, drives the room light
+    this.smoothed = 0;                   // low-passed emission, drives the room light
+    this.lastFlameHeight = FLAME_HEIGHT;  // metres, kept for tap hit testing
     this.resize();
   }
 
@@ -2093,6 +2152,27 @@ class Renderer {
     this.mid.height = Math.max(64, Math.round(this.field.ny * 4));
   }
 
+  /**
+   * Is this point, in CSS pixels, on the flame?
+   *
+   * Used for tap-to-snuff. The region is derived from where the flame
+   * actually is rather than from a fixed fraction of the screen, so it
+   * follows the flame as it grows with the dial and descends as the candle
+   * burns down. Padded enough to be hittable with a thumb and no more.
+   */
+  flameHitTest(cssX, cssY) {
+    const d = this.dpr;
+    const wick = this.wax.wickTop || 0;
+    const top = this.py(wick + this.lastFlameHeight) / d;
+    const bottom = this.py(wick) / d;
+    const cx = this.cx / d;
+    const halfW = Math.max(26, (bottom - top) * 0.32);
+    const pad = 14;
+    return Math.abs(cssX - cx) < halfW + pad
+      && cssY > top - pad
+      && cssY < bottom + pad;
+  }
+
   /** World metres (x from candle centre, y up from the base) to canvas pixels. */
   px(x) { return this.cx + x * this.scale; }
   py(y) { return this.baseY - y * this.scale; }
@@ -2103,6 +2183,8 @@ class Renderer {
     // The room light must not strobe on single-frame noise, but it does have
     // to carry the flame's real flicker, so smooth it only lightly.
     this.smoothed += (emission - this.smoothed) * 0.35;
+    // Kept for hit testing, so a tap can find the flame where it is now.
+    this.lastFlameHeight = this.field.flameHeight();
 
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, w, h);
@@ -2718,14 +2800,28 @@ function light() {
 function toggleFlame() { state.lit ? extinguish(null) : light(); }
 
 // Tapping the flame itself lights or snuffs it.
+//
+// Two rules, both learned from getting this wrong. The first version tested a
+// fixed band across the middle of the screen, which covered about a third of
+// it, so almost any tap put the candle out. And it ran even while the
+// controls were hidden, which meant the tap you make to bring them back also
+// snuffed the flame. So: while the interface is hidden a tap only wakes it,
+// and otherwise the target is the flame itself, wherever it currently is.
+// Snapshot taken in the capture phase, before anything else can react to the
+// press. Reading the state inside the handler itself is too late: a
+// pointermove arrives first on a mouse or stylus, wakes the interface, and
+// the tap then looks like it happened on a visible interface.
+let uiWasHiddenOnPress = false;
+window.addEventListener('pointerdown', () => {
+  uiWasHiddenOnPress = ui.classList.contains('dim');
+}, { capture: true });
+
 canvas.addEventListener('pointerdown', (e) => {
+  const wasHidden = uiWasHiddenOnPress;
   wake();
+  if (wasHidden || state.zen) return;
   const r = canvas.getBoundingClientRect();
-  const x = e.clientX - r.left;
-  const y = e.clientY - r.top;
-  const near = Math.abs(x - r.width / 2) < r.width * 0.28
-    && y > r.height * 0.18 && y < r.height * 0.72;
-  if (near) toggleFlame();
+  if (renderer.flameHitTest(e.clientX - r.left, e.clientY - r.top)) toggleFlame();
 });
 
 // ---------------------------------------------------------------- UI plumbing
@@ -2755,8 +2851,15 @@ btn.mic.addEventListener('click', async () => {
   showToast('Allow the microphone, then blow at your phone');
   const ok = await air.enableMic();
   press(btn.mic, ok);
-  showToast(ok ? 'Blow at your phone to put it out'
-               : `Microphone unavailable (${air.micError})`);
+  if (ok) { showToast('Blow at your phone to put it out'); return; }
+  // Say what to do about it, not just what the API called it.
+  const why = {
+    'permission refused': 'Microphone permission was declined. Allow it in Settings to blow the candle out.',
+    NotAllowedError: 'Microphone permission was declined. Allow it in Settings to blow the candle out.',
+    NotReadableError: 'Another app is using the microphone. Close it and try again.',
+    NotFoundError: 'No microphone found on this device.',
+  }[air.micError];
+  showToast(why || `Microphone unavailable (${air.micError})`);
 });
 
 // Focus timer. Leaving the app snuffs the candle, which is the whole point.

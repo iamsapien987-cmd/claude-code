@@ -33,8 +33,10 @@ import androidx.webkit.WebViewAssetLoader
 class MainActivity : ComponentActivity() {
 
     private lateinit var web: WebView
-    private var pendingMic: PermissionRequest? = null
     private var failed = false
+
+    private fun hasMic() =
+        checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
 
     private companion object {
         /** The virtual host WebViewAssetLoader serves the assets from. */
@@ -44,11 +46,24 @@ class MainActivity : ComponentActivity() {
     private val micPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
-        pendingMic?.let { req ->
-            if (granted) req.grant(arrayOf(PermissionRequest.RESOURCE_AUDIO_CAPTURE))
-            else req.deny()
-        }
-        pendingMic = null
+        // The system permission dialog pauses this activity, and onPause stops
+        // the WebView's timers. Delivering the answer straight away can
+        // therefore land on a WebView that is still suspended, so it is held
+        // and flushed once we are back in the foreground.
+        micResult = granted
+        if (resumed) flushMicResult()
+    }
+
+    private var micResult: Boolean? = null
+    private var resumed = false
+
+    private fun flushMicResult() {
+        val granted = micResult ?: return
+        micResult = null
+        web.evaluateJavascript(
+            "window.__candleMicPermission && window.__candleMicPermission($granted)",
+            null
+        )
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -146,21 +161,31 @@ class MainActivity : ComponentActivity() {
             }
 
             webChromeClient = object : WebChromeClient() {
+                /**
+                 * Answer the page's request for the microphone, synchronously.
+                 *
+                 * This deliberately never launches the Android permission
+                 * dialog. Doing that from here was the original design and it
+                 * did not work: the dialog pauses the activity, onPause stops
+                 * the WebView, and by the time the deferred grant arrived the
+                 * media stack had been torn down underneath the in-flight
+                 * getUserMedia call - which surfaced as NotReadableError, the
+                 * error for "permission is fine, the hardware would not
+                 * start". The page now asks for the OS permission first, via
+                 * requestMicPermission below, so by the time it reaches
+                 * getUserMedia the answer is already known and this can reply
+                 * immediately without anything pausing in between.
+                 */
                 override fun onPermissionRequest(request: PermissionRequest) {
                     val wantsMic = request.resources.contains(
                         PermissionRequest.RESOURCE_AUDIO_CAPTURE
                     )
                     if (!wantsMic) { request.deny(); return }
                     runOnUiThread {
-                        val granted = checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
-                            PackageManager.PERMISSION_GRANTED
-                        if (granted) {
+                        if (hasMic()) {
                             request.grant(arrayOf(PermissionRequest.RESOURCE_AUDIO_CAPTURE))
                         } else {
-                            // Only ask at the moment the user taps the mic
-                            // button, never on launch.
-                            pendingMic = request
-                            micPermission.launch(Manifest.permission.RECORD_AUDIO)
+                            request.deny()
                         }
                     }
                 }
@@ -181,6 +206,27 @@ class MainActivity : ComponentActivity() {
      * user's own brightness automatically when they leave.
      */
     inner class HostBridge {
+        /** Whether the OS microphone permission is already held. */
+        @android.webkit.JavascriptInterface
+        fun hasMicPermission(): Boolean = hasMic()
+
+        /**
+         * Ask for the microphone permission, answering through
+         * window.__candleMicPermission. Called before getUserMedia, never
+         * during it.
+         */
+        @android.webkit.JavascriptInterface
+        fun requestMicPermission() {
+            runOnUiThread {
+                if (hasMic()) {
+                    micResult = true
+                    flushMicResult()
+                } else {
+                    micPermission.launch(Manifest.permission.RECORD_AUDIO)
+                }
+            }
+        }
+
         // JavaScript has only doubles, so take one rather than relying on the
         // bridge to narrow it for us.
         @android.webkit.JavascriptInterface
@@ -196,6 +242,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onPause() {
         super.onPause()
+        resumed = false
         web.onPause()
         // Stops the simulation entirely while backgrounded. The focus session
         // is paused on the web side by the Page Visibility API, so the two
@@ -207,6 +254,9 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         web.resumeTimers()
         web.onResume()
+        resumed = true
+        // Deliver any permission answer that arrived while we were paused.
+        flushMicResult()
     }
 
     override fun onDestroy() {
