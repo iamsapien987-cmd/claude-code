@@ -66,7 +66,9 @@ running on the user's phone (Xiaomi/MIUI).
 | Light pool at the base | ✅ user-confirmed fixed |
 | Focus timer + candle shrinking | ✅ user-confirmed over a full session |
 | Microphone blow-out | ✅ user-confirmed, on native `AudioRecord` capture |
-| Screen returns to black in zen too | ✅ fixed after user report |
+| Microphone on a **fresh install** | ✅ user-confirmed after the ordering fix |
+| Screen returns to black in zen too | ✅ user-confirmed |
+| Focus session survives leaving the app | ✅ user-confirmed |
 | Double-tap to wake, ring to relight | ✅ user-confirmed |
 | System bars hidden, incl. after the mic | ✅ user-confirmed |
 | Full 25-minute focus run | ✅ user-confirmed |
@@ -316,6 +318,15 @@ untouched.
 
 `tap-check.mjs` is at 34 checks; the zen re-hide check was confirmed to fail
 with the fix reverted.
+
+Both confirmed on the device afterwards, the microphone on a genuinely fresh
+install with the app uninstalled first — which is the only way to reproduce
+that one, since an upgrade keeps the permission and hides the bug.
+
+**Everything reported from the device is now fixed and confirmed. The flame's
+shape is the only substantial item left**, and it has been deferred to last
+throughout at the user's request. §5 has the nine measured dead ends; read them
+before attempting it.
 
 ### 2026-08-30 — a focus session that could not be resumed
 
