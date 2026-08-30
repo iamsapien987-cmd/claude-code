@@ -386,9 +386,17 @@ export class FlameField {
         // under-counts how much room expanding gas needs as it moves off the
         // centreline, so the plume necked down into a spike instead of
         // bulging out into a flame.
+        // u/r has a removable singularity on the axis. By symmetry the
+        // radial velocity is zero there, and the limit of u/r is du/dr, so
+        // the axis cells use that instead. Clamping r to half a cell instead
+        // made this term reach hundreds of reciprocal seconds right where the
+        // flame sits, which flattened the sway the plume needs to shed
+        // vortices - the flame went dead steady.
         const side = i < cx ? -1 : 1;
-        const r = Math.max(0.5 * h, Math.abs(i + 0.5 - cx) * h);
-        const radial = (side * u[k]) / r;
+        const rc = Math.abs(i + 0.5 - cx);
+        const radial = rc < 1
+          ? side * (u[k + 1] - u[k - 1]) / (2 * h)
+          : (side * u[k]) / (rc * h);
         div[k] = -0.5 * h * ((u[k + 1] - u[k - 1]) + (v[k + nx] - v[k - nx]))
                  - h * h * radial
                  + h * h * this.expand[k];
