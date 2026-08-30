@@ -45,6 +45,26 @@ attempting it. The user has deferred flame shape to last.
   every push, and that is the only place the Kotlin gets compiled.
 - The container is ephemeral. Commit and push.
 
+## Keeping this current
+
+`docs/HANDOVER.md` exists so a fresh session can start cheaply instead of
+re-reading a long conversation. That only holds if it stays true, so **update
+it in the same commit as the change it describes** — never as a tidy-up later,
+which is how it silently goes stale.
+
+Worth an entry:
+
+- a fix confirmed working, or still failing, **on the device**
+- an approach tried and abandoned — goes to the dead ends in §5, with what it
+  measured, so nobody repeats it
+- a new environment constraint, or surprising platform behaviour
+- a change to the working agreements
+- a shift in what is being worked on next
+
+Not worth an entry: refactors, comment edits, parameter tuning that does not
+change a conclusion. If everything gets logged it stops being the thing worth
+reading first.
+
 ## Working with this user
 
 Not technical — explain plainly, keep the detail in code and commit messages.

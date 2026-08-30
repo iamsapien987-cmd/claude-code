@@ -2,8 +2,9 @@
 
 **Read this before doing anything else. It replaces the conversation.**
 
-Written so a session that has never seen the chat history can pick the work up
-without repeating it. The most valuable part is
+Maintained alongside the code — updated in the same commit as the change it
+describes, so its dates can be trusted. Written so a session that has never
+seen the chat history can pick the work up without repeating it. The most valuable part is
 [What has already been tried and failed](#what-has-already-been-tried-and-failed) —
 those are measured dead ends, not guesses, and re-running them costs hours.
 
@@ -213,7 +214,57 @@ Not done: signing config (deliberately not in the repo), store listing,
 screenshots, privacy policy hosted at a public URL. `docs/BUILD.md` covers all
 of it, including the Gradle timeout that stalled the original attempt.
 
-## 9. Working agreements
+## 9. Progress log
+
+Append-only. Newest last. Records what changed and what it meant, so the
+trajectory is visible and not just the current state.
+
+### 2026-08-30 — first build on real hardware
+
+The app reached the user's phone for the first time (Xiaomi/MIUI). Everything
+before this was verified in a desktop browser and by review only, and the gap
+between those showed immediately.
+
+Confirmed working on the device: the render, OLED blacks, the screen lock, the
+light pool at the base, and the timer and melting so far.
+
+Six bugs reported from real use, five fixed:
+
+- **Focus timer ran at about a fifteenth of real speed.** Decremented inside a
+  quarter-second display update but by that update's own frame delta, so it
+  discarded ~94% of every interval. Two of the user's screenshots six minutes
+  apart showed 35 seconds elapsed — the ratio almost exactly.
+- **Candle burned out in ~8 minutes.** `timeScale` was 90 against an 11 mm/hr
+  real burn. Now 6: about a fifth of the candle per 25-minute session.
+- **Crackle continued over an empty screen.** Its level was only set when the
+  flame was toggled by hand, so burning out never touched it. Burning out is
+  now a real state — the wick starves at a 7 mm stub.
+- **Light flooded the base.** The ground pool used a fixed radius regardless of
+  flame height. Now follows `E = I·h/(d²(d+L))`, so it narrows as the flame
+  descends.
+- **Tapping almost anywhere snuffed the candle.** The hit region was a fixed
+  band covering roughly a third of the screen, and it fired while the controls
+  were hidden — so the tap that brought them back also put it out.
+- **The dial was hard to use.** It tracked finger angle around a 92 px ring.
+  Now a vertical drag with a pointer on the ring.
+
+Added: screen lock, renamed to Real Candle, `tools/tap-check.mjs` (14 checks,
+in CI).
+
+Still open: the microphone, and the flame's shape.
+
+### 2026-08-30 — lessons that changed how the work is checked
+
+Three build-level bugs reached CI that careful review had passed: a hardcoded
+Chromium path, a Gradle/AGP version skew, and `BuildConfig` being off by
+default in AGP 8. Two behavioural bugs reached the user's phone. One test was
+flaky because its bound sat inside the distribution it was testing.
+
+The conclusion, and why the tooling looks the way it does: **review is not
+verification, and a desktop browser is not a phone.** Anything claimed as
+working should name how it was checked.
+
+## 10. Working agreements
 
 - **The user is not technical.** Explain plainly. Technical detail belongs in
   code and commit messages, not in chat. This was corrected mid-project.
