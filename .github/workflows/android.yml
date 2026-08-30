@@ -72,11 +72,29 @@ jobs:
         working-directory: android
         run: ./gradlew assembleDebug --no-daemon --stacktrace
 
-      - name: Report APK size
-        run: ls -lh android/app/build/outputs/apk/debug/*.apk
+      # Also build the release variant, unsigned. It is not installable and is
+      # not uploaded, but building it proves the shipping configuration
+      # compiles rather than leaving that to be discovered at release time.
+      - name: Assemble release (unsigned, compile check only)
+        working-directory: android
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Confirm the shipping build is not debuggable
+        run: |
+          set -e
+          AAPT=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | tail -1)
+          REL=$(ls android/app/build/outputs/apk/release/*.apk | head -1)
+          echo "release apk: $REL"
+          if "$AAPT" dump badging "$REL" 2>/dev/null | grep -q "application-debuggable"; then
+            echo "::error::release APK is debuggable"; exit 1
+          fi
+          echo "ok: release build is not debuggable"
+
+      - name: Report sizes
+        run: ls -lh android/app/build/outputs/apk/*/*.apk
 
       - uses: actions/upload-artifact@v4
         with:
           name: candle-debug-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          path: android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error

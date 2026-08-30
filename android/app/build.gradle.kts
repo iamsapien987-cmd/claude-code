@@ -5,24 +5,48 @@ plugins {
 
 android {
     namespace = "com.candleapp.flame"
-    compileSdk = 34
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.candleapp.flame"
         minSdk = 24
-        targetSdk = 34
+        targetSdk = 36
         versionCode = 1
         versionName = "1.0"
     }
 
     buildTypes {
+        debug {
+            // Sideloading build. Debuggable, which also turns on WebView
+            // remote debugging - fine on your own phone, never for release.
+            applicationIdSuffix = ".debug"
+            isDebuggable = true
+        }
         release {
+            isDebuggable = false
             // The app is one HTML file and one Activity; there is nothing to
             // shrink, and leaving this off keeps release builds identical to
             // debug ones so a bug can never be a minification artefact.
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // Signing is deliberately not configured here. An upload key must
+            // never live in a repository; see docs/BUILD.md for wiring one in
+            // from Android Studio or from CI secrets.
         }
+    }
+
+    // Reproducible-ish output: no build timestamp in the APK name.
+    applicationVariants.all {
+        outputs.all {
+            (this as com.android.build.gradle.internal.api.BaseVariantOutputImpl)
+                .outputFileName = "candle-${'$'}{name}-${'$'}{versionName}.apk"
+        }
+    }
+
+    // AGP 8 stopped generating BuildConfig unless asked; MainActivity uses
+    // BuildConfig.DEBUG to decide whether WebView remote debugging is on.
+    buildFeatures {
+        buildConfig = true
     }
 
     compileOptions {

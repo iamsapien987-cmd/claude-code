@@ -34,6 +34,7 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var web: WebView
     private var pendingMic: PermissionRequest? = null
+    private var failed = false
 
     private companion object {
         /** The virtual host WebViewAssetLoader serves the assets from. */
@@ -65,6 +66,10 @@ class MainActivity : ComponentActivity() {
             View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
             View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
 
+        // Remote debugging follows the build type, so it is on for the
+        // sideload build and off in anything shipped.
+        WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
+
         val loader = WebViewAssetLoader.Builder()
             .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
             .build()
@@ -76,9 +81,17 @@ class MainActivity : ComponentActivity() {
             // The crackle is synthesised on the fly, so it must be allowed to
             // start without a separate gesture of its own.
             settings.mediaPlaybackRequiresUserGesture = false
-            // No remote content is ever loaded, so leave these shut.
+            // No remote content is ever loaded, so everything that could
+            // reach outside the app is shut off explicitly rather than left
+            // to whatever the platform default happens to be on a given API
+            // level. None of it is needed: the page is a single local file.
             settings.allowFileAccess = false
             settings.allowContentAccess = false
+            settings.allowFileAccessFromFileURLs = false
+            settings.allowUniversalAccessFromFileURLs = false
+            settings.setGeolocationEnabled(false)
+            settings.databaseEnabled = false
+            settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
             settings.cacheMode = android.webkit.WebSettings.LOAD_NO_CACHE
             isVerticalScrollBarEnabled = false
             isHorizontalScrollBarEnabled = false
@@ -99,6 +112,37 @@ class MainActivity : ComponentActivity() {
                     view: WebView,
                     request: WebResourceRequest
                 ): Boolean = request.url.host != ASSET_HOST
+
+                /**
+                 * If the page ever fails to load, say so.
+                 *
+                 * The app draws on a black background, so a failure here
+                 * would otherwise present as a black screen with no
+                 * explanation and no way to tell it apart from a candle that
+                 * has been blown out. The asset loader is served over an
+                 * https origin so that getUserMedia works, and that origin is
+                 * intercepted locally rather than fetched - but if that ever
+                 * stops being true on some device, this is what makes it
+                 * visible instead of silent.
+                 */
+                override fun onReceivedError(
+                    view: WebView,
+                    request: WebResourceRequest,
+                    error: android.webkit.WebResourceError
+                ) {
+                    if (!request.isForMainFrame || failed) return
+                    failed = true
+                    view.loadDataWithBaseURL(
+                        null,
+                        """<html><body style="margin:0;background:#000;color:#c8c0b4;
+                           font:14px/1.6 sans-serif;display:flex;align-items:center;
+                           justify-content:center;height:100vh;text-align:center">
+                           <div style="padding:32px">The candle could not be loaded.<br>
+                           <span style="color:#6b645c;font-size:12px">
+                           ${error.description}</span></div></body></html>""",
+                        "text/html", "utf-8", null
+                    )
+                }
             }
 
             webChromeClient = object : WebChromeClient() {

@@ -103,6 +103,21 @@ over an unauthenticated connection — which is not a trade worth making. Option
 
 ---
 
+## Before you sideload the debug APK
+
+The APK CI produces is a **debug** build. That is the right thing for putting
+on your own phone — it is signed with Android's public debug key so it
+installs without any keystore setup — but understand what it means:
+
+- It is marked debuggable, so anyone with USB debugging access to the phone
+  can attach a debugger and inspect it. Do not treat it as hardened.
+- WebView remote debugging is on, for the same reason.
+- Its application ID ends in `.debug`, so it installs alongside a release
+  build rather than conflicting with it.
+
+None of that is a risk on your own device. All of it disqualifies the build
+from Play, which rejects debuggable uploads outright.
+
 ## Publishing to Google Play
 
 The app is deliberately close to the simplest case Play review has to handle.
@@ -126,13 +141,28 @@ Microphone audio is processed on-device transiently and never leaves it.
 **You still need a privacy policy URL.** Play requires one even for an app
 that collects nothing. A single page saying so is enough.
 
-**Before uploading a release:** set a real `versionCode`/`versionName` in
-`android/app/build.gradle.kts`, create an upload keystore
-(*Build → Generate Signed Bundle / APK*), and keep it somewhere safe — losing
-it means you cannot update the app.
+**Target API level.** `targetSdk` is 36. Play requires new apps to target
+within about a year of the latest Android release, and the exact floor moves
+every August — check the current requirement in the Play Console before you
+submit, because a target that is too low is rejected at upload.
 
-Prefer *Android App Bundle* (`.aab`) over APK for the Play upload; APK is for
-sideloading to your own phone.
+**Signing.** No signing configuration is committed, deliberately: an upload
+key must never live in a repository. Create one with *Build → Generate Signed
+Bundle / APK* in Android Studio and keep it somewhere safe — losing it means
+you can never update the app again. Prefer an *Android App Bundle* (`.aab`)
+for the Play upload; APK is for sideloading.
+
+**Version.** Bump `versionCode` for every upload; Play refuses a duplicate.
+
+**Privacy policy.** [PRIVACY.md](../PRIVACY.md) is written and accurate to
+what the code does. Play needs it at a public URL — GitHub Pages or a gist is
+enough.
+
+**Data safety form.** No data collected, no data shared. Declare the
+microphone as used for app functionality, processed on-device, not collected.
+
+CI builds the release variant on every push and fails if it comes out
+debuggable, so that particular rejection cannot reach the console.
 
 ---
 
