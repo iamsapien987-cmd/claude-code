@@ -35,6 +35,11 @@ class MainActivity : ComponentActivity() {
     private lateinit var web: WebView
     private var pendingMic: PermissionRequest? = null
 
+    private companion object {
+        /** The virtual host WebViewAssetLoader serves the assets from. */
+        const val ASSET_HOST = "appassets.androidplatform.net"
+    }
+
     private val micPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
@@ -85,11 +90,15 @@ class MainActivity : ComponentActivity() {
                     request: WebResourceRequest
                 ): WebResourceResponse? = loader.shouldInterceptRequest(request.url)
 
-                /** Nothing in this app should ever navigate anywhere. */
+                /**
+                 * Block navigation away from the app, but not the app itself.
+                 * Returning true unconditionally would risk swallowing our own
+                 * page load; only foreign hosts are refused.
+                 */
                 override fun shouldOverrideUrlLoading(
                     view: WebView,
                     request: WebResourceRequest
-                ): Boolean = true
+                ): Boolean = request.url.host != ASSET_HOST
             }
 
             webChromeClient = object : WebChromeClient() {
@@ -117,7 +126,7 @@ class MainActivity : ComponentActivity() {
         }
 
         setContentView(web)
-        web.loadUrl("https://appassets.androidplatform.net/assets/candle.html")
+        web.loadUrl("https://$ASSET_HOST/assets/candle.html")
     }
 
     /**
@@ -128,11 +137,14 @@ class MainActivity : ComponentActivity() {
      * user's own brightness automatically when they leave.
      */
     inner class HostBridge {
+        // JavaScript has only doubles, so take one rather than relying on the
+        // bridge to narrow it for us.
         @android.webkit.JavascriptInterface
-        fun setBrightness(value: Float) {
+        fun setBrightness(value: Double) {
+            if (value.isNaN()) return
             runOnUiThread {
                 window.attributes = window.attributes.apply {
-                    screenBrightness = value.coerceIn(0.02f, 1.0f)
+                    screenBrightness = value.toFloat().coerceIn(0.02f, 1.0f)
                 }
             }
         }
@@ -141,6 +153,9 @@ class MainActivity : ComponentActivity() {
     override fun onPause() {
         super.onPause()
         web.onPause()
+        // Stops the simulation entirely while backgrounded. The focus session
+        // is paused on the web side by the Page Visibility API, so the two
+        // agree about what "away" means.
         web.pauseTimers()
     }
 
@@ -151,6 +166,10 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        // Detach before destroying. A WebView that is destroyed while still
+        // attached to the view tree is a documented way to get a crash on
+        // some devices.
+        (web.parent as? android.view.ViewGroup)?.removeView(web)
         web.destroy()
         super.onDestroy()
     }

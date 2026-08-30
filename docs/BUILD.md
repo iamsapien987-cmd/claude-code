@@ -4,6 +4,14 @@ The app is one self-contained HTML file wrapped in a thin native shell. That
 means there is almost nothing to compile, and the build is about as simple as
 an Android build gets.
 
+> **This APK has not been compiled or run on a device.** The project was
+> developed in an environment with no Android SDK and no route to
+> `dl.google.com`, so the Kotlin has been reviewed and the resources and
+> manifest validated, but nothing here has been through `aapt`, the Kotlin
+> compiler, or a real phone. Expect to fix something on the first build. The
+> web layer, by contrast, is verified: `tools/verify-bundle.mjs` loads the
+> built page in a real browser engine on every change.
+
 ## 1. Build the web bundle first
 
 ```bash
@@ -19,12 +27,27 @@ You can open `dist/candle.html` directly in any browser, including on your
 phone — email it to yourself or drop it in Drive. It needs no server and no
 network.
 
-## 2. Open the project
+## 2. Build it
+
+The Gradle wrapper is committed, so from a terminal:
+
+```bash
+cd android
+./gradlew assembleDebug
+```
+
+The APK lands in `app/build/outputs/apk/debug/app-debug.apk`.
+
+The first run downloads Gradle and the Android Gradle Plugin, which needs
+`services.gradle.org` and `dl.google.com` to be reachable. If your network
+blocks either, see the troubleshooting section below.
+
+## 3. Or open it in Android Studio
 
 Open **Android Studio** → *Open* → select the `android/` folder (not the
 repository root). Let it sync.
 
-## 3. Run it
+## 4. Run it
 
 Plug in a phone with USB debugging on, or start an emulator, and press Run.
 
