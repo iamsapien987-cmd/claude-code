@@ -80,8 +80,8 @@ order of how often they work:
    slow rather than blocked.
 
 3. **Download Gradle by hand.** Check which version
-   `gradle-wrapper.properties` asks for (currently **8.7**), fetch
-   `gradle-8.7-bin.zip` from <https://services.gradle.org/distributions/> in a
+   `gradle-wrapper.properties` asks for (currently **8.11.1**), fetch
+   `gradle-8.11.1-bin.zip` from <https://services.gradle.org/distributions/> in a
    normal browser, unzip it somewhere permanent, then in Android Studio go to
    *Settings → Build, Execution, Deployment → Build Tools → Gradle*, set
    **Use Gradle from: Specified location**, and point it at that folder.

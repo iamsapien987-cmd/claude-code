@@ -35,14 +35,6 @@ android {
         }
     }
 
-    // Reproducible-ish output: no build timestamp in the APK name.
-    applicationVariants.all {
-        outputs.all {
-            (this as com.android.build.gradle.internal.api.BaseVariantOutputImpl)
-                .outputFileName = "candle-${'$'}{name}-${'$'}{versionName}.apk"
-        }
-    }
-
     // AGP 8 stopped generating BuildConfig unless asked; MainActivity uses
     // BuildConfig.DEBUG to decide whether WebView remote debugging is on.
     buildFeatures {
