@@ -48,6 +48,9 @@ const toast = document.getElementById('toast');
 const timerBar = document.getElementById('timerBar');
 const timerText = document.getElementById('timerText');
 const timerNote = document.getElementById('timerNote');
+const hint = document.getElementById('hint');
+const relightBtn = document.getElementById('relight');
+const relightLabel = document.getElementById('relightLabel');
 const btn = {
   mic: document.getElementById('btnMic'),
   focus: document.getElementById('btnFocus'),
@@ -142,8 +145,10 @@ function extinguish(reason) {
   state.relight = 0;
   dial.classList.add('out');
   buzz([14, 40, 22]);
-  if (reason) showToast(reason);
+  // The screen is about to go black on purpose, so say how to get back in.
+  if (reason) showToast(`${reason}\nDouble-tap to wake the screen`);
   crackle.setLevel(0, false);
+  syncRelight();
 }
 
 function light() {
@@ -153,12 +158,64 @@ function light() {
   air.extinguishFor = 0;
   buzz(12);
   crackle.setLevel(state.intensity, true);
+  syncRelight();
 }
 
 function toggleFlame() {
   if (wax.spent) { freshCandle(); return; }
   state.lit ? extinguish(null) : light();
 }
+
+/**
+ * Put the relight marker over the wick, and say what tapping it will do.
+ *
+ * The wick descends as the candle burns, so this is recomputed rather than
+ * placed once. Everything else about hiding it is inherited: the button sits
+ * a sibling of #ui rather than inside it - see the markup for why - so it
+ * mirrors the interface's sleep state through a class instead of inheriting
+ * it.
+ */
+function syncRelight() {
+  const show = !state.lit && !state.zen && !state.locked;
+  relightBtn.hidden = !show;
+  relightBtn.classList.toggle('dim', ui.classList.contains('dim'));
+  // Only write text when it actually changes. Assigning textContent
+  // invalidates layout, and the getBoundingClientRect below then forces it
+  // again; doing both every frame is the classic thrash, and here it cost
+  // enough frame time that adaptQuality dropped the substep count and
+  // visibly changed the flame.
+  setText(hint, state.lit
+    ? 'Slide the dial up or down \u00b7 tap the flame to snuff it'
+    : 'Double-tap to wake \u00b7 tap the ring to light');
+  if (!show) return;
+  setText(relightLabel, wax.spent ? 'Tap for a fresh candle' : 'Tap to light');
+  const r = canvas.getBoundingClientRect();
+  const d = renderer.dpr || 1;
+  relightBtn.style.left = `${r.left + renderer.px(0) / d}px`;
+  relightBtn.style.top = `${r.top + renderer.py(wax.wickTop) / d}px`;
+}
+
+function setText(el, text) {
+  if (el.textContent !== text) el.textContent = text;
+}
+
+relightBtn.addEventListener('click', () => {
+  if (state.locked) return;
+  // The press that snuffs the candle also puts this button on screen, right
+  // under the finger that did it - and the click belonging to that same tap
+  // then lands here and lights it straight back up. Snuffing the flame near
+  // its base was doing exactly that. So a click only counts if the button was
+  // already showing when the finger went down. Same snapshot as the canvas
+  // handler above, for the same reason: reading the state inside the handler
+  // is too late.
+  //
+  // It also means the double tap that wakes a dark screen cannot light the
+  // candle by accident, which is right: waking and lighting are two separate
+  // decisions.
+  if (relightWasHiddenOnPress) return;
+  toggleFlame();
+  wake();
+});
 
 /** Replace a burnt-out candle with a new one. */
 function freshCandle() {
@@ -185,14 +242,19 @@ function freshCandle() {
 // pointermove arrives first on a mouse or stylus, wakes the interface, and
 // the tap then looks like it happened on a visible interface.
 let uiWasHiddenOnPress = false;
+let relightWasHiddenOnPress = true;
 window.addEventListener('pointerdown', () => {
   uiWasHiddenOnPress = ui.classList.contains('dim');
+  relightWasHiddenOnPress = relightBtn.hidden || relightBtn.classList.contains('dim');
 }, { capture: true });
 
 canvas.addEventListener('pointerdown', (e) => {
   if (state.locked) return;
   const wasHidden = uiWasHiddenOnPress;
-  wake();
+  // Not wake(): while the candle is out and the screen has gone black, a
+  // single touch here must be as inert as one anywhere else, or the double
+  // tap would only be required on the parts of the screen nobody presses.
+  wakeFromInput();
   if (wasHidden || state.zen) return;
   const r = canvas.getBoundingClientRect();
   if (renderer.flameHitTest(e.clientX - r.left, e.clientY - r.top)) toggleFlame();
@@ -206,9 +268,37 @@ function wake() {
   clearTimeout(idleTimer);
   if (state.zen) return;
   idleTimer = setTimeout(() => ui.classList.add('dim'), 4200);
+  // Coming back from the dark should feel immediate rather than waiting on
+  // the quarter-second readout tick.
+  syncHostBrightness();
+  syncRelight();
+}
+/**
+ * The state a snuffed candle settles into: nothing lit, and the screen has
+ * taken itself down to black.
+ *
+ * Zen is excluded on purpose. Its whole contract is "tap anywhere to bring the
+ * controls back", and that should keep working whether or not the candle
+ * happens to be alight.
+ */
+function darkRest() {
+  return !state.lit && !state.locked && !state.zen && ui.classList.contains('dim');
+}
+
+/**
+ * Waking on input, except from the dark.
+ *
+ * The user asked for the black screen after a snuffed candle to stay - it is
+ * the point of the app, not a fault - and asked for a double tap to bring it
+ * back. So a single touch must not do it: a hand brushing a phone on a desk
+ * would otherwise light the panel, which is exactly what was wanted gone.
+ */
+function wakeFromInput() {
+  if (darkRest()) return;
+  wake();
 }
 ['pointerdown', 'pointermove', 'keydown'].forEach((ev) =>
-  window.addEventListener(ev, wake, { passive: true }));
+  window.addEventListener(ev, wakeFromInput, { passive: true }));
 
 let toastTimer = 0;
 function showToast(msg, ms = 3400) {
@@ -342,19 +432,29 @@ btn.lock.addEventListener('click', () => {
   showToast('Screen locked. Double-tap to unlock.');
 });
 
+/**
+ * Double tap: the one gesture that gets you back in.
+ *
+ * It serves two states, and the lock takes precedence because it is the
+ * stronger claim on the screen. Neither is reachable by an accidental touch,
+ * which is the reason for the gesture in both cases.
+ */
 let lastTapAt = 0;
-window.addEventListener('pointerdown', (e) => {
-  if (!state.locked) return;
+window.addEventListener('pointerdown', () => {
+  const unlocking = state.locked;
+  if (!unlocking && !darkRest()) { lastTapAt = 0; return; }
   const now = performance.now();
-  if (now - lastTapAt < 400) {
+  if (now - lastTapAt >= 400) { lastTapAt = now; return; }
+  lastTapAt = 0;
+  if (unlocking) {
     state.locked = false;
     press(btn.lock, false);
     document.body.classList.remove('locked');
-    lastTapAt = 0;
     wake();
     showToast('Unlocked');
   } else {
-    lastTapAt = now;
+    wake();
+    buzz(10);
   }
 }, { capture: true });
 
@@ -427,7 +527,7 @@ function frame(now) {
   // because its level was only ever set when the flame was toggled by hand.
   if (wax.spent && state.lit) {
     extinguish(null);
-    showToast('The candle has burned out. Tap the wick for a new one.');
+    showToast('The candle has burned out.\nTap the ring for a fresh one.');
   }
   if (state.sound) crackle.setLevel(state.intensity, state.lit && !wax.spent);
 
@@ -469,13 +569,22 @@ function syncHostBrightness() {
   // backlight high would make a dark room glow orange and give the whole
   // illusion away - quite apart from the battery. This range reads as a
   // candle in the dark and still has headroom in a lit room.
+  //
+  // A snuffed candle takes the panel to almost nothing, and stays there. That
+  // is the user's own preference and not an oversight: with no flame there is
+  // no light to give off, and a phone quietly glowing at a dead candle would
+  // give the whole thing away. The cost is that the controls become
+  // unreadable, so waking the interface - which now takes a deliberate double
+  // tap - lifts the panel to somewhere you can actually see it.
   const target = state.lit
     ? OLED_MIN_BRIGHTNESS + renderer.luminance() * (OLED_MAX_BRIGHTNESS - OLED_MIN_BRIGHTNESS)
-    : 0.03;
+    : (ui.classList.contains('dim') ? OUT_ASLEEP_BRIGHTNESS : OUT_AWAKE_BRIGHTNESS);
   // Ease towards it: matching the flicker frame for frame would make the
   // backlight buzz, because the panel responds far more slowly than the
-  // rendered flame does.
-  hostBrightness += (target - hostBrightness) * 0.18;
+  // rendered flame does. That only applies to a live flame, though - with the
+  // candle out there is nothing to smooth, and a slow fade up would make the
+  // double tap feel like it had not registered.
+  hostBrightness += (target - hostBrightness) * (state.lit ? 0.18 : 0.5);
   try {
     host.setBrightness(hostBrightness);
   } catch (e) {
@@ -485,6 +594,10 @@ function syncHostBrightness() {
 let hostBrightness = 0.35;
 const OLED_MIN_BRIGHTNESS = 0.08;
 const OLED_MAX_BRIGHTNESS = 0.70;
+/** Candle out, screen asleep: as near off as the platform allows. */
+const OUT_ASLEEP_BRIGHTNESS = 0.03;
+/** Candle out, screen woken by a double tap: readable, not glaring. */
+const OUT_AWAKE_BRIGHTNESS = 0.35;
 
 let readoutAcc = 0;
 function updateReadout(dt) {
@@ -492,6 +605,8 @@ function updateReadout(dt) {
   if (readoutAcc < 0.25) return;
   readoutAcc = 0;
   syncHostBrightness();
+  // Four times a second is ample: the wick descends over minutes.
+  syncRelight();
 
   if (state.mode === 'focus') {
     const m = Math.floor(state.focusLeft / 60000);

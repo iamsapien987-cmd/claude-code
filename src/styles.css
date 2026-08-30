@@ -251,3 +251,69 @@ body.reading #hint { opacity: 0; }
 @media (prefers-reduced-motion: reduce) {
   #ui, #toast, #timerBar { transition-duration: 1ms; }
 }
+
+/* ------------------------------------------------- lighting it again
+ *
+ * A snuffed candle takes the screen to black, which is deliberate - see
+ * syncHostBrightness. The cost is that there is then nothing to look at and
+ * nowhere obvious to press, so this marks the one place that matters.
+ *
+ * It sits over the wick rather than at a fixed spot on the screen, because
+ * the wick descends as the candle burns and a mark that drifted away from it
+ * would be worse than none. The ember pulse is there to be findable in the
+ * dark without lighting the panel: a thin ring and a few words, nothing that
+ * fills area on an OLED.
+ */
+#relight {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 96px;              /* the touch target, far larger than the ring */
+  height: 96px;
+  transform: translate(-50%, -50%);
+  display: grid;
+  place-items: center;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  z-index: 4;
+  -webkit-tap-highlight-color: transparent;
+}
+#relight[hidden] { display: none; }
+/* Follows the interface's own fade, since it does not live inside it. */
+#relight { transition: opacity 900ms ease; }
+#relight.dim { opacity: 0; pointer-events: none; }
+
+#relightRing {
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(255, 168, 74, 0.5);
+  box-shadow: 0 0 18px rgba(255, 140, 40, 0.16), inset 0 0 12px rgba(255, 140, 40, 0.1);
+  animation: ember 2.6s ease-in-out infinite;
+}
+
+#relightLabel {
+  position: absolute;
+  top: calc(50% + 36px);
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgba(255, 178, 96, 0.7);
+}
+
+@keyframes ember {
+  0%, 100% { opacity: 0.5; }
+  50%      { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #relightRing { animation: none; opacity: 0.8; }
+}

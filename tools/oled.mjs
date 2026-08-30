@@ -72,6 +72,28 @@ console.log(`peak luminance        ${maxL.toFixed(0)} / 255`);
 console.log(`corners  TL ${at(2, 2)}  TR ${at(w - 3, 2)}  BL ${at(2, h - 3)}  BR ${at(w - 3, h - 3)}`);
 console.log(`edges    top-mid ${at(w >> 1, 2)}  left-mid ${at(2, h >> 1)}  right-mid ${at(w - 3, h >> 1)}`);
 
+// Second audit: the candle out.
+//
+// The user asked for the screen to go genuinely black once the flame is gone
+// and the interface has slept - "I think it is a good thing" - so that is a
+// property to pin, not a side effect to leave to chance. A relight marker or
+// a glow left behind by a decaying flame would show up here.
+await page.evaluate(() => window.__candle.extinguish(null));
+await page.waitForTimeout(9000);
+const dark = await page.evaluate(() => {
+  const c = document.getElementById('stage');
+  const g = c.getContext('2d');
+  const d = g.getImageData(0, 0, c.width, c.height).data;
+  let off = 0, peak = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    if (d[i] === 0 && d[i + 1] === 0 && d[i + 2] === 0) off++;
+    const l = 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
+    if (l > peak) peak = l;
+  }
+  return { off, total: d.length / 4, peak };
+});
+console.log(`snuffed  ${(100 * dark.off / dark.total).toFixed(2)}% of the scene off, peak ${dark.peak.toFixed(0)}/255`);
+
 await browser.close();
 server.close();
 
@@ -93,6 +115,15 @@ const offFraction = off / px;
 const problems = [];
 if (lit.length) problems.push(`lit where it should be off: ${lit.map(([n]) => n).join(', ')}`);
 if (offFraction < 0.35) problems.push(`only ${(100 * offFraction).toFixed(1)}% of the frame is off`);
+// With the candle out the scene should be black almost everywhere. The margin
+// left here is for the wick's dying ember, which is real and should stay;
+// anything that lights actual area - a glow left behind, a marker drawn into
+// the scene - moves these well past the bounds.
+const darkFraction = dark.off / dark.total;
+if (darkFraction < 0.995) {
+  problems.push(`snuffed scene only ${(100 * darkFraction).toFixed(2)}% off`);
+}
+if (dark.peak > 80) problems.push(`snuffed scene still peaks at ${dark.peak.toFixed(0)}/255`);
 if (problems.length) {
   console.log('FAIL — ' + problems.join('; '));
   process.exit(1);

@@ -65,13 +65,10 @@ running on the user's phone (Xiaomi/MIUI).
 | Screen lock | ✅ user-confirmed "100%" |
 | Light pool at the base | ✅ user-confirmed fixed |
 | Focus timer + candle shrinking | ✅ looking right, full 25-min run still pending |
+| Microphone blow-out | ✅ user-confirmed, on native `AudioRecord` capture |
 
 ### Not yet working
 
-- **Microphone blow-out.** `getUserMedia` fails with `NotReadableError` on the
-  user's device under conditions that rule out every WebView-side cause. Now
-  captured natively with `AudioRecord` instead. Untested on the device;
-  see [§7](#7-open-issues).
 - **Flame shape.** Too thin and column-like; lacks teardrop volume. The user
   has explicitly deferred this to last and named it "the issue you have failed
   at repeatedly." See [§5](#what-has-already-been-tried-and-failed).
@@ -192,14 +189,11 @@ of the simulated volume.
 
 ## 7. Open issues
 
-1. **Microphone** — three `getUserMedia` fixes attempted and all three
-   disproved by the device's own diagnostics (see the progress log). Capture
-   now bypasses the WebView entirely: `MicCapture.kt` opens `AudioRecord`
-   directly. Untested on the device. Hold the mic button for the readout;
-   `source:` names which audio source opened, and `tried:` lists what each one
-   said if none did.
-2. **Flame shape** — see §5. Deferred by the user to last.
-3. **25-minute timer run** — not yet completed end to end.
+1. **Flame shape** — see §5. Deferred by the user to last.
+2. **25-minute timer run** — not yet completed end to end.
+3. **Relight flow untested on the device** — double tap to wake, and the ring
+   at the wick. Passes in a real browser engine with a touchscreen; not yet
+   confirmed on the phone.
 
 ## 8. Play Store readiness
 
@@ -249,7 +243,7 @@ Six bugs reported from real use, five fixed:
 Added: screen lock, renamed to Real Candle, `tools/tap-check.mjs` (14 checks,
 in CI).
 
-Still open: the microphone, and the flame's shape.
+Still open at that point: the microphone, and the flame's shape.
 
 ### 2026-08-30 — microphone: two theories disproved by the device
 
@@ -286,6 +280,56 @@ which request shape was last tried.
 **Untested on the device as of writing.** If it fails again, `audio inputs: 0`
 would point upstream of this app entirely — MIUI's privacy layer is the
 suspect — while a success on `plain` confirms the constraint theory.
+
+### 2026-08-30 — the microphone works, and what the dark then needed
+
+Native `AudioRecord` capture worked on the device first try. Four attempts at
+this, and the one that landed was the one that stopped guessing at the WebView
+and went below it. Worth keeping as the general lesson: **three misses in a row
+means the method is wrong, not the guess.**
+
+That immediately exposed the next thing. Blowing the candle out leaves the
+screen pitch black, because `syncHostBrightness` takes the panel to 0.03 with
+no flame and nothing lifts it again — so the controls become unreadable and the
+only way to relight was an invisible ~80×28 px box at the wick, which
+`flameHitTest` collapses to when there is no flame to size itself from.
+
+The user's own framing settled the design: *"the screen goes pitch black after
+that... I think it is a good thing; but the screen should light up after that
+with double tap and the app should provide option to re-ignite candle by
+tapping the screen at a specific place."* So the dark stays and is now pinned
+by a test rather than left to chance. What changed:
+
+- Two brightness levels while out — 0.03 asleep, 0.35 once woken. Waking eases
+  fast (0.5) rather than at the flame's 0.18: there is no flicker to smooth
+  with the candle out, and a slow fade made the double tap feel unregistered.
+- A single touch no longer wakes a dark screen; a deliberate double tap does.
+  The canvas handler needed the same gate as the window listener, or the rule
+  would only have applied to the parts of the screen nobody presses.
+- A marked ring over the wick, following it down as the candle burns, labelled
+  "Tap to light" or "Tap for a fresh candle" when the wax is spent.
+
+Two bugs found by building it, both worth recording because neither is obvious:
+
+1. **A transform makes an element the containing block for `position: fixed`
+   descendants.** `#ui` animates one for 900 ms as it fades, which parked the
+   ring hundreds of pixels below the screen for the whole fade. The button is
+   now a sibling of `#ui` and mirrors its sleep state through a class.
+2. **The tap that snuffs the candle reveals the relight ring under the same
+   finger**, and the `click` belonging to that tap then landed on it and lit
+   the candle straight back up — only for taps below about y=400, which is why
+   it read as flaky rather than broken. Fixed with the capture-phase snapshot
+   already used for `uiWasHiddenOnPress`; the fix for that bug turned out to
+   be the fix for this one too.
+
+Also: putting `syncRelight` in the frame loop wrote `textContent` and forced
+layout every frame, which cost enough frame time that `adaptQuality` dropped
+the substep count and changed the flame. It runs at the readout's 4 Hz now,
+plus directly on the state changes it reflects.
+
+`tap-check.mjs` covers all of it (21 checks), and the new regression check was
+confirmed to fail with the fix removed. `oled.mjs` now audits the snuffed scene
+too — 99.98% of it off, peak 31/255, which is the wick's ember and should stay.
 
 ### 2026-08-30 — microphone: stopped guessing, went under the WebView
 

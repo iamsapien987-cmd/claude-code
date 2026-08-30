@@ -43,7 +43,24 @@
       <div id="dialFlame"></div>
     </div>
     <div id="hint">Slide the dial up or down &middot; tap the flame to snuff it</div>
+
   </div>
+
+  <!--
+    Where to tap to light the candle again. Positioned over the wick from
+    script, so it follows the candle down as it burns rather than sitting at a
+    fixed place on the screen.
+
+    Deliberately a sibling of #ui rather than a child. #ui animates a transform
+    when it fades in and out, and an element with a transform becomes the
+    containing block for position:fixed descendants - which parked this button
+    several hundred pixels below the screen for the whole 900 ms of the fade.
+    It follows #ui's dim state through a class instead.
+  -->
+  <button id="relight" type="button" aria-label="Light the candle" hidden>
+    <span id="relightRing" aria-hidden="true"></span>
+    <span id="relightLabel">Tap to light</span>
+  </button>
 
   <div id="timerBar"><span id="timerText"></span><span id="timerNote"></span></div>
   <div id="toast"></div>

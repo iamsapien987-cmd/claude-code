@@ -41,6 +41,19 @@ const flamePoint = () => page.evaluate(() => {
   return { x: r.cx / d, y: (top + bottom) / 2 };
 });
 
+/** The relight ring's centre and size in CSS pixels, or null if not shown. */
+const relightBox = () => page.evaluate(() => {
+  const b = document.getElementById('relight');
+  if (b.hidden) return null;
+  const r = b.getBoundingClientRect();
+  return { x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width, h: r.height };
+});
+/** Where the wick is right now, in CSS pixels. */
+const wickPoint = () => page.evaluate(() => {
+  const r = window.__candle.renderer;
+  return { x: r.cx / r.dpr, y: r.py(r.wax.wickTop) / r.dpr };
+});
+
 const results = [];
 const check = (name, pass, detail = '') => {
   results.push({ name, pass, detail });
@@ -74,6 +87,17 @@ await page.waitForTimeout(300);
 const f2 = await flamePoint();
 await tap(f2.x, f2.y);
 check('tap on the flame snuffs it', await lit() === false, `at (${f2.x.toFixed(0)}, ${f2.y.toFixed(0)})`);
+
+// 3b. Snuffing low on the flame lands exactly where the relight ring is about
+//     to appear. The click belonging to that same tap must not light it again
+//     - it did, and only for taps below about y=400, which is why this is
+//     pinned at a fixed offset from the wick rather than left to the flicker.
+await relight();
+await page.waitForTimeout(400);
+const nearWick = await wickPoint();
+await tap(nearWick.x, nearWick.y - 20);
+check('snuffing low on the flame does not instantly relight it', await lit() === false,
+  `tapped (${nearWick.x.toFixed(0)}, ${(nearWick.y - 20).toFixed(0)})`);
 
 // 4. The dial responds to a vertical drag, and its pointer follows.
 await relight();
@@ -123,6 +147,37 @@ await page.waitForTimeout(80);
 await page.touchscreen.tap(200, 400);
 await page.waitForTimeout(400);
 check('double-tap unlocks', await page.evaluate(() => window.__candle.state.locked) === false);
+
+// 6. A snuffed candle takes the screen to black, and only a deliberate double
+//    tap brings it back - the user asked for the dark to stay.
+await relight();
+await page.waitForTimeout(300);
+await page.evaluate(() => window.__candle.extinguish(null));
+await idle();
+check('the screen sleeps once the candle is out', await uiHidden());
+await tap(120, 300);
+check('a single tap does not wake a dark screen', await uiHidden() === true);
+// Clear of the double-tap window, so the pair below is unambiguous.
+await page.waitForTimeout(600);
+await page.touchscreen.tap(120, 300);
+await page.waitForTimeout(80);
+await page.touchscreen.tap(120, 300);
+await page.waitForTimeout(400);
+check('a double tap wakes it', await uiHidden() === false);
+
+// 7. The way to light it again is marked, sits on the wick, and works.
+const ring = await relightBox();
+const wick = await wickPoint();
+check('the relight ring is showing', ring !== null);
+if (ring) {
+  check('...centred on the wick', Math.abs(ring.x - wick.x) < 8 && Math.abs(ring.y - wick.y) < 8,
+    `ring (${ring.x.toFixed(0)}, ${ring.y.toFixed(0)}) vs wick (${wick.x.toFixed(0)}, ${wick.y.toFixed(0)})`);
+  check('...with a touch target of at least 56px', ring.w >= 56 && ring.h >= 56,
+    `${ring.w}x${ring.h}`);
+  await tap(ring.x, ring.y);
+  check('tapping the ring lights the candle', await lit() === true);
+  check('...and the ring goes away', await relightBox() === null);
+}
 
 await browser.close();
 if (errors.length) { console.log('PAGE ERRORS:'); errors.slice(0, 5).forEach((e) => console.log('  ', e)); }
