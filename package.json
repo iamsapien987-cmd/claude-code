@@ -1,0 +1,14 @@
+{
+  "name": "candle",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A candle simulated from first principles: buoyant combustion, blackbody radiation, and real wax melting.",
+  "scripts": {
+    "build": "node tools/build.mjs",
+    "test": "node --test test/",
+    "shoot": "node tools/shoot.mjs",
+    "serve": "node tools/serve.mjs"
+  },
+  "devDependencies": { "playwright": "^1.56.0" }
+}

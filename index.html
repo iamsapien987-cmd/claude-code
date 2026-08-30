@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<meta name="description" content="A candle simulated from first principles: buoyant combustion, blackbody radiation, and real wax melting.">
+<title>Candle</title>
+<link rel="stylesheet" href="src/styles.css">
+</head>
+<body>
+  <canvas id="stage"></canvas>
+
+  <div id="ui">
+    <div id="readout" aria-live="polite"></div>
+
+    <div id="toolbar" role="toolbar" aria-label="Modes">
+      <button class="tool" id="btnMic"   aria-pressed="false" title="Blow out with the microphone" aria-label="Microphone blow-out">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3z"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+      </button>
+      <button class="tool" id="btnFocus" aria-pressed="false" title="25-minute focus session" aria-label="Focus timer">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5M9 2h6"/></svg>
+      </button>
+      <button class="tool" id="btnRead"  aria-pressed="false" title="Reading light" aria-label="Reading light">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h6a3 3 0 0 1 3 3v11a2.5 2.5 0 0 0-2.5-2.5H3zM21 5h-6a3 3 0 0 0-3 3v11a2.5 2.5 0 0 1 2.5-2.5H21z"/></svg>
+      </button>
+      <button class="tool" id="btnSound" aria-pressed="false" title="Wick crackle" aria-label="Sound">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9zM17 9.5a3.5 3.5 0 0 1 0 5M19.5 7a7 7 0 0 1 0 10"/></svg>
+      </button>
+      <button class="tool" id="btnZen"   aria-pressed="false" title="Hide everything" aria-label="Solitude mode">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6z"/><circle cx="12" cy="12" r="2.5"/></svg>
+      </button>
+    </div>
+
+    <div id="dial" role="slider" tabindex="0" aria-label="Flame intensity"
+         aria-valuemin="0" aria-valuemax="100" aria-valuenow="70">
+      <div id="dialTrack"></div>
+      <div id="dialGlow"></div>
+      <div id="dialFlame"></div>
+    </div>
+    <div id="hint">Drag the dial &middot; tap the flame to light it</div>
+  </div>
+
+  <div id="timerBar"><span id="timerText"></span><span id="timerNote"></span></div>
+  <div id="verse"><p class="line"></p><p class="sub"></p></div>
+  <div id="toast"></div>
+
+  <script type="module" src="src/app.js"></script>
+</body>
+</html>

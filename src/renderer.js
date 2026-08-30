@@ -1,0 +1,501 @@
+/**
+ * Rendering. Everything drawn here is driven by the simulation state; there
+ * are no keyframes and no hand-authored flame shape anywhere in this file.
+ *
+ * The layer order mirrors how the light physically arrives at your eye:
+ *
+ *   1. the light the flame throws into the room, falling off as 1/r^2
+ *   2. the surface the candle stands on, lit by that light
+ *   3. the wax body, lit from above and glowing from within where the flame
+ *      heats it (paraffin is translucent - Beer-Lambert through ~6 mm)
+ *   4. the molten pool and the charred wick
+ *   5. the flame itself, as blackbody emission from soot plus the blue
+ *      chemiluminescent reaction zone at its base
+ *   6. bloom, which is what the eye and the camera both do with a source
+ *      this much brighter than its surroundings
+ */
+
+import { blackbodyRGB, encodeSrgb } from './blackbody.js';
+import { FlameRasteriser } from './flamecolor.js';
+import {
+  CANDLE_RADIUS, T_SOOT_IGNITION, T_COLOR_ROOM,
+  LUMINOUS_INTENSITY, FLAME_HEIGHT,
+} from './constants.js';
+import { PROFILE_N } from './wax.js';
+
+const ROOM_RGB = blackbodyRGB(T_COLOR_ROOM).map((c) => Math.round(255 * encodeSrgb(c)));
+
+/** Vertical squash of the top-face ellipse: we look slightly down on the candle. */
+const TILT = 0.19;
+/** Beer-Lambert attenuation length of light inside paraffin, metres. */
+const WAX_SCATTER_LENGTH = 0.006;
+/**
+ * Emission from the solver that corresponds to a fully lit scene. Measured
+ * from the solver itself with tools/calibrate.mjs rather than guessed.
+ */
+const EMISSION_REF = 20000;
+
+export class Renderer {
+  constructor(canvas, field, wax) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d', { alpha: false });
+    this.field = field;
+    this.wax = wax;
+
+    // Flame is composited from a buffer at simulation resolution.
+    this.flameBuf = document.createElement('canvas');
+    this.flameBuf.width = field.nx;
+    this.flameBuf.height = field.ny;
+    this.flameCtx = this.flameBuf.getContext('2d');
+    this.flameImg = this.flameCtx.createImageData(field.nx, field.ny);
+    this.raster = new FlameRasteriser(field.nx, field.ny);
+
+    // Half-resolution intermediate. Upscaling in two bilinear steps is much
+    // smoother than one big jump, and gives the bloom pass something cheap
+    // to blur.
+    this.mid = document.createElement('canvas');
+    this.midCtx = this.mid.getContext('2d');
+
+    this.dpr = 1;
+    this.smoothed = 0;   // low-passed emission, drives the room light
+    this.resize();
+  }
+
+  /**
+   * Perceived brightness of the scene, 0..~1.3.
+   *
+   * The solver's emission swings over roughly a 40:1 range between the
+   * bottom and top of the dial, but perceived lightness is not proportional
+   * to luminance. CIE L* is a cube root of relative luminance, and using
+   * that here is what makes the dial feel linear under the hand while the
+   * underlying radiometry stays honest.
+   */
+  luminance() {
+    return Math.min(1.45, Math.cbrt(Math.max(0, this.smoothed) / EMISSION_REF));
+  }
+
+  resize() {
+    const c = this.canvas;
+    this.dpr = Math.min(2, window.devicePixelRatio || 1);
+    const w = Math.round(c.clientWidth * this.dpr);
+    const h = Math.round(c.clientHeight * this.dpr);
+    if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+    this.w = w;
+    this.h = h;
+
+    // Metres of world visible vertically. The candle plus its flame is about
+    // 17 cm, so showing ~34 cm frames it with room to breathe.
+    this.viewHeight = 0.34;
+    this.scale = h / this.viewHeight;            // pixels per metre
+    this.baseY = h * 0.93;                       // where the candle stands
+    this.cx = w / 2;
+
+    this.mid.width = Math.max(64, Math.round(this.field.nx * 4));
+    this.mid.height = Math.max(64, Math.round(this.field.ny * 4));
+  }
+
+  /** World metres (x from candle centre, y up from the base) to canvas pixels. */
+  px(x) { return this.cx + x * this.scale; }
+  py(y) { return this.baseY - y * this.scale; }
+
+  draw(state) {
+    const { ctx, w, h } = this;
+    const emission = this.field.emission();
+    // The room light must not strobe on single-frame noise, but it does have
+    // to carry the flame's real flicker, so smooth it only lightly.
+    this.smoothed += (emission - this.smoothed) * 0.35;
+
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, w, h);
+
+    this.drawRoomLight(state);
+    this.drawGround(state);
+    this.drawCandle(state);
+    this.drawPoolAndWick(state);
+    this.drawFlame(state);
+    this.drawSmoke(state);
+    this.drawVignette();
+  }
+
+  /**
+   * Light thrown into the room. A candle is, by the historical definition of
+   * the unit, about one candela; illuminance falls off as 1/r^2, so the
+   * gradient stops are placed on that curve rather than eyeballed.
+   */
+  drawRoomLight(state) {
+    const { ctx, w, h } = this;
+    const wick = this.wax.wickTop || 0;
+    const fx = this.px(0);
+    const fy = this.py(wick + 0.018);
+
+    const lum = this.luminance() * LUMINOUS_INTENSITY;
+    if (lum <= 0.001) return;
+
+    const reach = Math.max(w, h) * 1.6;
+    const g = ctx.createRadialGradient(fx, fy, 0, fx, fy, reach);
+    const [r, gr, b] = ROOM_RGB;
+
+    // A candle flame is not a point. It is a luminous column some four
+    // centimetres tall, and close in - within a flame height or so - its
+    // illuminance falls off roughly as 1/d rather than 1/d^2. Treating it as
+    // a point put a hard bright disc on the screen with a visible edge where
+    // the inverse square curve fell off a cliff. Using
+    //
+    //     E = I / (d * (d + L))
+    //
+    // recovers 1/d near the flame and the correct 1/d^2 far away, with the
+    // crossover at the flame's own height, which is what a real candle's
+    // pool of light looks like.
+    const L = FLAME_HEIGHT;
+    const STOPS = 14;
+    for (let i = 0; i <= STOPS; i++) {
+      const s = i / STOPS;
+      // Sample the curve on a square law so the near field, where all the
+      // interesting variation is, gets most of the gradient stops.
+      const d = 0.012 + s * s * this.viewHeight * 2.2;   // metres from the flame
+      const e = lum / (d * (d + L));
+      const a = Math.min(0.80, e * 0.0072);
+      g.addColorStop(s, `rgba(${r}, ${gr}, ${b}, ${a.toFixed(4)})`);
+    }
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, h);
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  /** The surface the candle stands on, plus its contact shadow. */
+  drawGround(state) {
+    const { ctx, w } = this;
+    const y = this.baseY;
+    const lum = this.luminance();
+    const rPx = CANDLE_RADIUS * this.scale;
+
+    // Soft pool of light on the table.
+    const g = ctx.createRadialGradient(this.cx, y, rPx * 0.4, this.cx, y, rPx * 9);
+    const [r, gr, b] = ROOM_RGB;
+    g.addColorStop(0, `rgba(${r}, ${gr}, ${b}, ${(0.30 * lum).toFixed(3)})`);
+    g.addColorStop(0.35, `rgba(${r}, ${gr}, ${b}, ${(0.10 * lum).toFixed(3)})`);
+    g.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.save();
+    ctx.translate(0, y);
+    ctx.scale(1, TILT * 1.6);
+    ctx.translate(0, -y);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, y - rPx * 9, w, rPx * 18);
+    ctx.restore();
+    ctx.globalCompositeOperation = 'source-over';
+
+    // Contact shadow directly under the candle.
+    const sh = ctx.createRadialGradient(this.cx, y, 0, this.cx, y, rPx * 1.9);
+    sh.addColorStop(0, 'rgba(0, 0, 0, 0.85)');
+    sh.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    ctx.save();
+    ctx.translate(0, y);
+    ctx.scale(1, TILT);
+    ctx.translate(0, -y);
+    ctx.fillStyle = sh;
+    ctx.fillRect(this.cx - rPx * 2, y - rPx * 2, rPx * 4, rPx * 4);
+    ctx.restore();
+  }
+
+  /** Outline of the wax body, used both to fill and to clip. */
+  bodyPath(ctx) {
+    const wax = this.wax;
+    const rPx = CANDLE_RADIUS * this.scale;
+    const leftTop = this.py(wax.nodeHeight(0));
+    const rightTop = this.py(wax.nodeHeight(PROFILE_N - 1));
+    const base = this.baseY;
+
+    ctx.beginPath();
+    ctx.moveTo(this.cx - rPx, leftTop);
+    ctx.lineTo(this.cx - rPx, base);
+    // The bottom of the candle is an ellipse too, seen from the same angle.
+    ctx.ellipse(this.cx, base, rPx, rPx * TILT, 0, Math.PI, 0, true);
+    ctx.lineTo(this.cx + rPx, rightTop);
+    ctx.ellipse(this.cx, rightTop, rPx, rPx * TILT, 0, 0, Math.PI, true);
+    ctx.closePath();
+  }
+
+  drawCandle(state) {
+    const { ctx } = this;
+    const wax = this.wax;
+    const rPx = CANDLE_RADIUS * this.scale;
+    const topY = this.py(wax.nodeHeight(0));
+    const lum = this.luminance();
+
+    ctx.save();
+    this.bodyPath(ctx);
+    ctx.clip();
+
+    // Cylinder shading. The body is lit from a point source directly above,
+    // so brightness follows the surface normal turning away from the axis and
+    // then falls off down the length of the candle.
+    const g = ctx.createLinearGradient(this.cx - rPx, 0, this.cx + rPx, 0);
+    const shade = (t) => {
+      // t is -1..1 across the diameter; the surface normal's horizontal
+      // component is t, so the Lambert term goes as sqrt(1 - t^2).
+      const n = Math.sqrt(Math.max(0, 1 - t * t));
+      const v = 0.10 + 0.62 * Math.pow(n, 0.85);
+      return v;
+    };
+    for (let i = 0; i <= 10; i++) {
+      const s = i / 10;
+      const v = shade(s * 2 - 1) * lum;
+      const r = Math.round(255 * Math.min(1, v * 1.00));
+      const gg = Math.round(255 * Math.min(1, v * 0.93));
+      const b = Math.round(255 * Math.min(1, v * 0.80));
+      g.addColorStop(s, `rgb(${r}, ${gg}, ${b})`);
+    }
+    ctx.fillStyle = g;
+    this.bodyPath(ctx);
+    ctx.fill();
+
+    // Vertical falloff: the far end of the candle is further from the flame.
+    const vg = ctx.createLinearGradient(0, topY, 0, this.baseY);
+    vg.addColorStop(0, 'rgba(0, 0, 0, 0)');
+    vg.addColorStop(0.45, 'rgba(0, 0, 0, 0.35)');
+    vg.addColorStop(1, 'rgba(0, 0, 0, 0.80)');
+    ctx.fillStyle = vg;
+    ctx.fillRect(this.cx - rPx, topY, rPx * 2, this.baseY - topY + 2);
+
+    // Subsurface scattering. Paraffin is translucent, so light from the flame
+    // enters the wax near the top and is attenuated with depth following
+    // Beer-Lambert with an attenuation length of about 6 mm. This is the
+    // warm internal glow that distinguishes real wax from painted plastic.
+    const depth = WAX_SCATTER_LENGTH * this.scale;
+    const sg = ctx.createLinearGradient(0, topY - depth * 0.5, 0, topY + depth * 5);
+    for (let i = 0; i <= 6; i++) {
+      const s = i / 6;
+      const a = Math.exp(-s * 5 * 0.85) * 0.55 * lum;
+      sg.addColorStop(s, `rgba(255, 168, 84, ${a.toFixed(3)})`);
+    }
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = sg;
+    ctx.fillRect(this.cx - rPx, topY - depth, rPx * 2, depth * 7);
+    ctx.globalCompositeOperation = 'source-over';
+
+    this.drawDrips(ctx, rPx, lum);
+    ctx.restore();
+
+    // A soft rim on the lit side so the silhouette does not read as a cutout.
+    ctx.save();
+    this.bodyPath(ctx);
+    ctx.clip();
+    const rim = ctx.createLinearGradient(this.cx - rPx, 0, this.cx - rPx * 0.55, 0);
+    rim.addColorStop(0, `rgba(255, 190, 120, ${(0.22 * lum).toFixed(3)})`);
+    rim.addColorStop(1, 'rgba(255, 190, 120, 0)');
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = rim;
+    ctx.fillRect(this.cx - rPx, topY, rPx, this.baseY - topY);
+    ctx.restore();
+  }
+
+  /** Live and set drips running down the outside of the candle. */
+  drawDrips(ctx, rPx, lum) {
+    const all = this.wax.frozen.concat(this.wax.drips);
+    for (const d of all) {
+      const rad = Math.max(1.5, d.radius * this.scale);
+      const x = this.cx + d.side * rPx * (1 - d.across * 0.55) - d.side * rad * 0.4;
+      const y = this.py(d.y);
+      const top = this.py(d.startY ?? d.y);
+
+      // The trail the drip has left behind it, slightly proud of the wall.
+      ctx.beginPath();
+      ctx.moveTo(x, Math.min(top, y));
+      ctx.lineTo(x, y);
+      ctx.lineWidth = rad * 1.5;
+      ctx.lineCap = 'round';
+      ctx.strokeStyle = `rgba(${Math.round(226 * lum)}, ${Math.round(206 * lum)}, ${Math.round(172 * lum)}, 0.9)`;
+      ctx.stroke();
+
+      // The bead at the leading edge, with a specular highlight.
+      const g = ctx.createRadialGradient(x - rad * 0.35, y - rad * 0.4, 0, x, y, rad * 1.5);
+      g.addColorStop(0, `rgba(255, 245, 225, ${0.95 * lum})`);
+      g.addColorStop(0.5, `rgba(${Math.round(232 * lum)}, ${Math.round(210 * lum)}, ${Math.round(176 * lum)}, 1)`);
+      g.addColorStop(1, `rgba(${Math.round(150 * lum)}, ${Math.round(128 * lum)}, ${Math.round(100 * lum)}, 0.6)`);
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.ellipse(x, y, rad * 1.15, rad * 1.5, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  /** The molten pool in the crater, and the charred wick standing in it. */
+  drawPoolAndWick(state) {
+    const { ctx } = this;
+    const wax = this.wax;
+    const rPx = CANDLE_RADIUS * this.scale;
+    const lum = this.luminance();
+
+    // Top face, drawn from the radial height profile so the crater and its
+    // standing rim are the shape the melt model actually produced.
+    ctx.save();
+    ctx.beginPath();
+    for (let i = 0; i < PROFILE_N; i++) {
+      const x = this.px(wax.nodeRadius(i));
+      const y = this.py(wax.nodeHeight(i)) + rPx * TILT * Math.cos(
+        Math.asin(Math.max(-1, Math.min(1, wax.nodeRadius(i) / CANDLE_RADIUS)))
+      ) * 0;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    // Close around the near lip of the top ellipse.
+    const rightY = this.py(wax.nodeHeight(PROFILE_N - 1));
+    const leftY = this.py(wax.nodeHeight(0));
+    ctx.ellipse(this.cx, (leftY + rightY) / 2, rPx, rPx * TILT, 0, 0, Math.PI, false);
+    ctx.closePath();
+    ctx.clip();
+
+    const faceY = this.py(wax.centreHeight());
+    const fg = ctx.createRadialGradient(this.cx, faceY, 0, this.cx, faceY, rPx * 1.2);
+    fg.addColorStop(0, `rgba(${Math.round(255 * lum)}, ${Math.round(214 * lum)}, ${Math.round(160 * lum)}, 1)`);
+    fg.addColorStop(0.55, `rgba(${Math.round(214 * lum)}, ${Math.round(184 * lum)}, ${Math.round(140 * lum)}, 1)`);
+    fg.addColorStop(1, `rgba(${Math.round(120 * lum)}, ${Math.round(100 * lum)}, ${Math.round(78 * lum)}, 1)`);
+    ctx.fillStyle = fg;
+    ctx.fillRect(this.cx - rPx - 2, faceY - rPx, rPx * 2 + 4, rPx * 3);
+
+    // Liquid wax is specular where the solid face is not: the pool picks up a
+    // sharp reflection of the flame sitting right above it.
+    const pr = Math.max(0, wax.poolRadius) * this.scale;
+    if (pr > 1) {
+      const pg = ctx.createRadialGradient(this.cx, faceY, 0, this.cx, faceY, pr);
+      pg.addColorStop(0, `rgba(255, 236, 200, ${0.85 * lum})`);
+      pg.addColorStop(0.4, `rgba(255, 190, 120, ${0.35 * lum})`);
+      pg.addColorStop(1, 'rgba(255, 170, 90, 0)');
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.fillStyle = pg;
+      ctx.save();
+      ctx.translate(this.cx, faceY);
+      ctx.scale(1, TILT * 1.5);
+      ctx.beginPath();
+      ctx.arc(0, 0, pr, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      ctx.globalCompositeOperation = 'source-over';
+    }
+    ctx.restore();
+
+    // The wick: charred and bent over towards the oxygen-rich outer edge of
+    // the flame, which is how a candle trims itself.
+    const wy = this.py(wax.centreHeight());
+    const tipY = this.py(wax.wickTop);
+    const bend = (wax.wickCarbon * 0.55 + 0.15) * (wax.wickTop - wax.centreHeight()) * this.scale;
+    ctx.beginPath();
+    ctx.moveTo(this.cx, wy);
+    ctx.quadraticCurveTo(this.cx + bend * 0.2, (wy + tipY) / 2, this.cx + bend, tipY);
+    ctx.lineWidth = Math.max(1.2, 0.0016 * this.scale);
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = state.lit ? 'rgba(24, 18, 14, 0.95)' : 'rgba(38, 32, 28, 0.95)';
+    ctx.stroke();
+
+    // The base of the wick glows: it sits inside the reaction zone.
+    if (state.lit) {
+      ctx.globalCompositeOperation = 'lighter';
+      const eg = ctx.createRadialGradient(this.cx, wy, 0, this.cx, wy, rPx * 0.6);
+      eg.addColorStop(0, `rgba(255, 150, 60, ${0.75 * lum})`);
+      eg.addColorStop(1, 'rgba(255, 120, 40, 0)');
+      ctx.fillStyle = eg;
+      ctx.beginPath();
+      ctx.arc(this.cx, wy, rPx * 0.6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalCompositeOperation = 'source-over';
+    }
+  }
+
+  /**
+   * The flame. Soot incandescence is looked up from the precomputed Planck
+   * ramp; the blue base is added separately from the reaction rate, because
+   * it is chemiluminescence from excited CH and C2 rather than thermal
+   * emission and so does not lie on the blackbody locus at all.
+   */
+  drawFlame(state) {
+    const f = this.field;
+    const img = this.flameImg;
+    this.raster.raster(this.field, img.data);
+    this.flameCtx.putImageData(img, 0, 0);
+
+    // Two-stage upscale keeps the bilinear interpolation from showing its
+    // diamond pattern, and the small intermediate is cheap to blur.
+    const mc = this.midCtx;
+    mc.clearRect(0, 0, this.mid.width, this.mid.height);
+    mc.imageSmoothingEnabled = true;
+    mc.imageSmoothingQuality = 'high';
+    mc.filter = 'blur(1.6px)';
+    mc.drawImage(this.flameBuf, 0, 0, this.mid.width, this.mid.height);
+    mc.filter = 'none';
+
+    const { ctx } = this;
+    const wPx = f.nx * f.h * this.scale;
+    const hPx = f.ny * f.h * this.scale;
+    const x0 = this.cx - wPx / 2;
+    const y0 = this.py(this.wax.wickTop) - hPx;
+
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+
+    // Bloom: the same image drawn larger and dimmer, twice, approximates the
+    // veiling glare of a very bright small source.
+    ctx.globalAlpha = 0.30;
+    ctx.drawImage(this.mid, x0 - wPx * 0.45, y0 - hPx * 0.10, wPx * 1.9, hPx * 1.2);
+    ctx.globalAlpha = 0.42;
+    ctx.drawImage(this.mid, x0 - wPx * 0.14, y0 - hPx * 0.03, wPx * 1.28, hPx * 1.06);
+    ctx.globalAlpha = 1;
+    ctx.drawImage(this.mid, x0, y0, wPx, hPx);
+
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  /**
+   * Smoke. Soot that escapes the reaction zone - which happens in quantity
+   * only once the flame is out - rises, spreads by turbulent diffusion, and
+   * fades. It is drawn from the same soot field the solver advects.
+   */
+  drawSmoke(state) {
+    if (state.lit && state.blowStrength < 0.15) return;
+    const f = this.field;
+    const { ctx } = this;
+    const wPx = f.nx * f.h * this.scale;
+    const hPx = f.ny * f.h * this.scale;
+    const x0 = this.cx - wPx / 2;
+    const y0 = this.py(this.wax.wickTop) - hPx;
+    const cw = f.nx, ch = f.ny;
+
+    if (!this.smokeBuf) {
+      this.smokeBuf = document.createElement('canvas');
+      this.smokeBuf.width = cw; this.smokeBuf.height = ch;
+      this.smokeCtx = this.smokeBuf.getContext('2d');
+      this.smokeImg = this.smokeCtx.createImageData(cw, ch);
+    }
+    const d = this.smokeImg.data;
+    let any = false;
+    for (let j = 0; j < ch; j++) {
+      const row = (ch - 1 - j) * cw * 4;
+      for (let i = 0; i < cw; i++) {
+        const k = i + j * cw;
+        const a = Math.min(1, f.soot[k] * 0.9) * (f.T[k] < T_SOOT_IGNITION ? 1 : 0.15);
+        const o = row + i * 4;
+        d[o] = 190; d[o + 1] = 186; d[o + 2] = 180;
+        d[o + 3] = a * 190;
+        if (a > 0.01) any = true;
+      }
+    }
+    if (!any) return;
+    this.smokeCtx.putImageData(this.smokeImg, 0, 0);
+    ctx.save();
+    ctx.filter = 'blur(2px)';
+    ctx.globalAlpha = 0.55;
+    ctx.drawImage(this.smokeBuf, x0, y0, wPx, hPx);
+    ctx.restore();
+  }
+
+  drawVignette() {
+    const { ctx, w, h } = this;
+    const g = ctx.createRadialGradient(w / 2, h * 0.55, Math.min(w, h) * 0.25,
+                                       w / 2, h * 0.55, Math.max(w, h) * 0.78);
+    g.addColorStop(0, 'rgba(0, 0, 0, 0)');
+    g.addColorStop(1, 'rgba(0, 0, 0, 0.55)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, h);
+  }
+}
