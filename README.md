@@ -117,10 +117,16 @@ A circular dial that is a wick length — turn it up and the wick delivers more
 vapour, exactly as the wheel on an oil lamp works. Blow at the phone and the
 flame goes out, when the strain rate you impose beats the rate the chemistry
 can release heat (the Damköhler criterion — which is why a sharp puff works
-and steady breathing does not). A 25-minute focus timer that snuffs the candle
-if you leave the app. A reading light. A solitude mode that takes the
-interface away and leaves a line of verse. Synthesised wick crackle, generated
-as Poisson-distributed events rather than looped, because any loop eventually
-becomes recognisable.
+and steady breathing does not). A 25-minute focus session. A reading light. A
+solitude mode that takes the interface away and leaves the flame. Synthesised
+wick crackle, generated as Poisson-distributed events rather than looped,
+because any loop eventually becomes recognisable.
 
 No account, no analytics, no network permission.
+
+Two deliberate omissions. The focus timer **pauses** when you leave the app
+rather than blowing the candle out — punishing someone for glancing at a
+message doesn't build a habit, it builds resentment, and a phone call
+shouldn't cost you the session. And solitude mode shows no text at all: being
+handed someone else's chosen words to read is the opposite of what that mode
+is for.

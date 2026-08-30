@@ -51,6 +51,8 @@ html, body {
 /* ------------------------------------------------------------- the readout */
 #readout {
   font-size: 10px;
+  opacity: 0;
+  transition: opacity 500ms ease;
   letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--ink);
@@ -60,6 +62,10 @@ html, body {
   min-height: 14px;
 }
 #readout b { font-weight: 500; color: rgba(255, 210, 160, 0.72); }
+/* The numbers are for anyone curious what the simulation is actually doing.
+   They are not decoration for the flame, so they surface while you are
+   working the dial and then get out of the way. */
+#readout.on { opacity: 1; }
 
 /* ------------------------------------------------------------- the toolbar */
 #toolbar { display: flex; gap: 14px; }
@@ -185,36 +191,6 @@ html, body {
   color: rgba(255, 255, 255, 0.26);
 }
 
-#verse {
-  position: fixed;
-  top: 24%;
-  left: 50%;
-  transform: translateX(-50%);
-  width: min(86%, 420px);
-  z-index: 2;
-  text-align: center;
-  opacity: 0;
-  transition: opacity 2.6s ease;
-  pointer-events: none;
-}
-#verse.on { opacity: 1; }
-#verse .line {
-  margin: 0 0 14px;
-  font-size: 19px;
-  font-weight: 300;
-  font-style: italic;
-  line-height: 1.75;
-  color: rgba(255, 214, 170, 0.82);
-  text-shadow: 0 2px 20px rgba(0, 0, 0, 0.9);
-}
-#verse .sub {
-  margin: 0;
-  font-size: 10px;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.3);
-}
-
 #toast {
   position: fixed;
   bottom: max(150px, calc(env(safe-area-inset-bottom) + 150px));
@@ -238,8 +214,8 @@ html, body {
 #toast.on { opacity: 1; transform: translate(-50%, 0); }
 
 /* Reading mode widens the light and calms the interface right down. */
-body.reading #hint, body.reading #readout { opacity: 0; }
+body.reading #hint { opacity: 0; }
 
 @media (prefers-reduced-motion: reduce) {
-  #ui, #verse, #toast, #timerBar { transition-duration: 1ms; }
+  #ui, #toast, #timerBar { transition-duration: 1ms; }
 }

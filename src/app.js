@@ -34,8 +34,8 @@ const state = {
   mode: null,          // null | 'focus' | 'reading'
   zen: false,
   sound: false,
-  focusEndsAt: 0,
-  focusFailed: false,
+  focusLeft: 0,        // ms remaining in the session
+  focusPaused: false,
 };
 
 // ------------------------------------------------------------------ elements
@@ -47,7 +47,6 @@ const toast = document.getElementById('toast');
 const timerBar = document.getElementById('timerBar');
 const timerText = document.getElementById('timerText');
 const timerNote = document.getElementById('timerNote');
-const verse = document.getElementById('verse');
 const btn = {
   mic: document.getElementById('btnMic'),
   focus: document.getElementById('btnFocus'),
@@ -61,12 +60,19 @@ window.addEventListener('resize', () => renderer.resize());
 window.addEventListener('orientationchange', () => setTimeout(() => renderer.resize(), 120));
 
 // ---------------------------------------------------------------------- dial
+let readoutTimer = 0;
 function setIntensity(v, haptic = false) {
   const clamped = Math.max(0, Math.min(1, v));
   if (haptic && Math.abs(clamped - state.intensity) > 0.02) buzz(6);
   state.intensity = clamped;
   dial.style.setProperty('--p', clamped.toFixed(3));
   dial.setAttribute('aria-valuenow', Math.round(clamped * 100));
+  // Show what the simulation is doing while the dial is in hand, then let it
+  // go quiet again. A permanent heads-up display of telemetry sitting under a
+  // candle undercuts the thing it is measuring.
+  readout.classList.add('on');
+  clearTimeout(readoutTimer);
+  readoutTimer = setTimeout(() => readout.classList.remove('on'), 2600);
 }
 
 /** Short vibration, where the platform offers one. */
@@ -190,31 +196,43 @@ btn.mic.addEventListener('click', async () => {
 // Focus timer. Leaving the app snuffs the candle, which is the whole point.
 const FOCUS_MS = 25 * 60 * 1000;
 btn.focus.addEventListener('click', () => {
-  if (state.mode === 'focus') { endFocus('Session cancelled'); return; }
+  if (state.mode === 'focus') { endFocus('Session ended'); return; }
   state.mode = 'focus';
-  state.focusFailed = false;
-  state.focusEndsAt = Date.now() + FOCUS_MS;
+  state.focusLeft = FOCUS_MS;
+  state.focusPaused = false;
   press(btn.focus, true);
   timerBar.classList.add('on');
-  timerNote.textContent = 'Leave the app and the candle goes out';
+  timerNote.textContent = 'Pauses if you leave';
   light();
-  showToast('25 minutes. Stay here.');
+  showToast('25 minutes.');
 });
 
 function endFocus(msg) {
   state.mode = null;
+  state.focusPaused = false;
   press(btn.focus, false);
   timerBar.classList.remove('on');
   if (msg) showToast(msg);
 }
 
+/**
+ * Leaving the app pauses the session; it does not end it.
+ *
+ * The obvious design here is to blow the candle out the moment you check a
+ * message, and call it a commitment device. It is a bad idea. Punishing
+ * someone for a glance at their phone does not build the habit, it just makes
+ * the app something you resent and then delete - and it means a phone call
+ * costs you the session. The flame drops low while you are away, so coming
+ * back to it still tells you plainly that you left, and the clock simply
+ * stops rather than throwing away the time you did put in.
+ */
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden && state.mode === 'focus') {
-    state.focusFailed = true;
-    extinguish(null);
-  } else if (!document.hidden && state.focusFailed) {
-    state.focusFailed = false;
-    endFocus('You left. The candle went out.');
+  if (state.mode !== 'focus') return;
+  if (document.hidden) {
+    state.focusPaused = true;
+  } else {
+    state.focusPaused = false;
+    timerNote.textContent = 'Pauses if you leave';
   }
 });
 
@@ -238,40 +256,23 @@ btn.sound.addEventListener('click', () => {
   else crackle.stop();
 });
 
-// Solitude: everything goes away except the flame and one line of verse.
-const VERSES = [
-  ['Sukoon-e-dil ke liye kuch to ehtemam karoon,',
-   'let me make some arrangement for the heart’s peace'],
-  ['Zara der hi sahi, khud se to kalaam karoon.',
-   'even if only briefly, let me speak with myself'],
-];
-let verseIndex = 0;
-let verseTimer = 0;
-
+/**
+ * Solitude: the interface goes away and leaves the flame.
+ *
+ * Nothing else. No quotation, no daily reflection, no text at all. Anything
+ * written on the screen is something the user has to read, and being asked to
+ * read someone else's chosen words is the opposite of what this mode is for.
+ */
 btn.zen.addEventListener('click', () => {
   state.zen = !state.zen;
   press(btn.zen, state.zen);
   if (state.zen) {
     ui.classList.add('dim');
-    cycleVerse();
-    verseTimer = setInterval(cycleVerse, 13000);
+    showToast('Tap anywhere to bring the controls back');
   } else {
-    clearInterval(verseTimer);
-    verse.classList.remove('on');
     wake();
   }
 });
-
-function cycleVerse() {
-  verse.classList.remove('on');
-  setTimeout(() => {
-    const [line, sub] = VERSES[verseIndex % VERSES.length];
-    verse.querySelector('.line').textContent = line;
-    verse.querySelector('.sub').textContent = sub;
-    verse.classList.add('on');
-    verseIndex++;
-  }, 1200);
-}
 
 // ----------------------------------------------------------------- main loop
 let last = performance.now();
@@ -326,6 +327,9 @@ function frame(now) {
  */
 function effectiveIntensity() {
   if (state.mode === 'reading') return 0.86;
+  // A paused session guts the flame down to a low ember rather than killing
+  // it: enough that coming back tells you plainly that you left.
+  if (state.focusPaused) return 0.12;
   return state.intensity;
 }
 
@@ -365,11 +369,11 @@ function updateReadout(dt) {
   syncHostBrightness();
 
   if (state.mode === 'focus') {
-    const left = Math.max(0, state.focusEndsAt - Date.now());
-    const m = Math.floor(left / 60000);
-    const s = Math.floor((left % 60000) / 1000);
-    timerText.textContent = `${m}:${String(s).padStart(2, '0')}`;
-    if (left <= 0) { endFocus('Session complete.'); buzz([30, 60, 30]); }
+    if (!state.focusPaused) state.focusLeft = Math.max(0, state.focusLeft - dt * 1000);
+    const m = Math.floor(state.focusLeft / 60000);
+    const sec = Math.floor((state.focusLeft % 60000) / 1000);
+    timerText.textContent = `${m}:${String(sec).padStart(2, '0')}`;
+    if (state.focusLeft <= 0) { endFocus('Done.'); buzz([30, 60, 30]); }
   }
 
   if (state.zen || state.mode === 'reading') { readout.textContent = ''; return; }
