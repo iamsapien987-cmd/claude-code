@@ -2,6 +2,7 @@ package com.candleapp.flame
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.view.View
 import android.view.WindowManager
@@ -14,6 +15,8 @@ import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.webkit.WebViewAssetLoader
 
 /**
@@ -101,13 +104,15 @@ class MainActivity : ComponentActivity() {
         // a candle. This flag needs no permission.
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        WindowCompat.setDecorFitsSystemWindows(window, false)
-        window.decorView.systemUiVisibility =
-            View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
-            View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
-            View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
-            View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
-            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+        // Draw into the cutout as well, so a notch leaves a black strip of
+        // our own rather than a letterbox the system fills in.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            window.attributes = window.attributes.apply {
+                layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
+        goFullscreen()
 
         // Remote debugging follows the build type, so it is on for the
         // sideload build and off in anything shipped.
@@ -299,6 +304,40 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Take the whole screen: no clock, no battery, no signal bars.
+     *
+     * This used to set the SYSTEM_UI_FLAG_* constants, which were deprecated
+     * at API 30 and are ignored on a current device - which is why the status
+     * bar was still sitting above the candle. WindowInsetsController is the
+     * replacement.
+     *
+     * It matters here for more than tidiness. Those glyphs are lit pixels on
+     * an OLED panel, in a dark room, directly above a flame that is supposed
+     * to be the only thing in the frame giving off light.
+     *
+     * The bars have to be re-hidden rather than hidden once: anything that
+     * takes focus away - a permission dialog, the notification shade, a call -
+     * brings them back.
+     */
+    private fun goFullscreen() {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            hide(WindowInsetsCompat.Type.systemBars())
+            // A swipe from an edge shows them for a few seconds and then they
+            // leave again. That is the most an app is allowed to ask for now,
+            // and rightly so: a status bar you cannot ever recover is not on
+            // offer.
+            systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) goFullscreen()
+    }
+
     override fun onPause() {
         super.onPause()
         resumed = false
@@ -315,6 +354,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        goFullscreen()
         web.resumeTimers()
         web.onResume()
         resumed = true

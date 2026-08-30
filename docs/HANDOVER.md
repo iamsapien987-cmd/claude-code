@@ -281,6 +281,29 @@ which request shape was last tried.
 would point upstream of this app entirely — MIUI's privacy layer is the
 suspect — while a success on `plain` confirms the constraint theory.
 
+### 2026-08-30 — the status bar was never actually hidden
+
+The clock, battery and signal bars were still sitting above the candle. The
+activity had been setting `SYSTEM_UI_FLAG_IMMERSIVE_STICKY` and friends since
+the beginning, which looked right and did nothing: those constants were
+deprecated at API 30 and are ignored on a current device. Nobody noticed
+because the code plainly said "hide the system bars".
+
+`WindowInsetsControllerCompat.hide(systemBars())` is the replacement, with
+`BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE` so an edge swipe still recovers them
+briefly. It has to be re-applied on every focus gain, not set once: a
+permission dialog, the notification shade or an incoming call all bring the
+bars back. It now runs in `onCreate`, `onResume` and `onWindowFocusChanged`.
+
+Worth remembering as a class of bug rather than a one-off: **a deprecated
+Android API does not fail loudly, it just stops working**, and the code keeps
+describing an intention it no longer carries out. The app also now draws into
+the display cutout, so a notch leaves our own black rather than a letterbox.
+
+For this app it is not cosmetic. Those glyphs are lit pixels on an OLED panel
+in a dark room, directly above the flame that is meant to be the only source
+of light in the frame - the same reason `oled.mjs` exists.
+
 ### 2026-08-30 — the microphone works, and what the dark then needed
 
 Native `AudioRecord` capture worked on the device first try. Four attempts at
