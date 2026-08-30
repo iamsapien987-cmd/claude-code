@@ -249,6 +249,8 @@ btn.mic.addEventListener('click', async () => {
     'permission refused': 'Microphone permission was declined. Allow it in Settings to blow the candle out.',
     NotAllowedError: 'Microphone permission was declined. Allow it in Settings to blow the candle out.',
     NotReadableError: 'This phone would not open the microphone for the app. Hold this button for details and send them on.',
+    'native capture refused': 'The microphone would not open. Hold this button for details and send them on.',
+    'native capture threw': 'The microphone would not open. Hold this button for details and send them on.',
     NotFoundError: 'No microphone found on this device.',
   }[air.micError];
   showToast(why || `Microphone unavailable (${air.micError})`);

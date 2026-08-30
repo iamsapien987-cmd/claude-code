@@ -68,7 +68,9 @@ running on the user's phone (Xiaomi/MIUI).
 
 ### Not yet working
 
-- **Microphone blow-out.** Fails with `NotReadableError`. Two fixes attempted;
+- **Microphone blow-out.** `getUserMedia` fails with `NotReadableError` on the
+  user's device under conditions that rule out every WebView-side cause. Now
+  captured natively with `AudioRecord` instead. Untested on the device;
   see [§7](#7-open-issues).
 - **Flame shape.** Too thin and column-like; lacks teardrop volume. The user
   has explicitly deferred this to last and named it "the issue you have failed
@@ -190,13 +192,12 @@ of the simulated volume.
 
 ## 7. Open issues
 
-1. **Microphone `NotReadableError`** — three fixes attempted, the first two
-   disproved by the device's own diagnostics (see the progress log). Permission
-   is granted and the context is secure; the device still will not open.
-   Current attempt falls back from unprocessed to plain capture constraints.
-   Untested. Hold the mic button for the readout: `audio inputs: 0` would mean
-   the problem is upstream of this app (MIUI privacy layer), and a success on
-   `plain` confirms the constraints were unsatisfiable.
+1. **Microphone** — three `getUserMedia` fixes attempted and all three
+   disproved by the device's own diagnostics (see the progress log). Capture
+   now bypasses the WebView entirely: `MicCapture.kt` opens `AudioRecord`
+   directly. Untested on the device. Hold the mic button for the readout;
+   `source:` names which audio source opened, and `tried:` lists what each one
+   said if none did.
 2. **Flame shape** — see §5. Deferred by the user to last.
 3. **25-minute timer run** — not yet completed end to end.
 
@@ -285,6 +286,65 @@ which request shape was last tried.
 **Untested on the device as of writing.** If it fails again, `audio inputs: 0`
 would point upstream of this app entirely — MIUI's privacy layer is the
 suspect — while a success on `plain` confirms the constraint theory.
+
+### 2026-08-30 — microphone: stopped guessing, went under the WebView
+
+The constraint theory was disproved too. The readout came back:
+
+```
+error: NotReadableError   attempts: 4      last mode: plain retry
+audio inputs: 1           native shell: yes
+OS permission: granted    getUserMedia: available    secure context: yes
+```
+
+`last mode: plain retry` is the important line. A bare `{ audio: true }` — no
+constraints at all — was refused. Together with the earlier readouts that
+leaves nothing on the WebView side to fix: permission held, secure origin, a
+device enumerated, the app foreground and unpaused (the permission was already
+granted, so no dialog and no pause were involved), and no constraint to fail.
+
+Three theories, three misses, all inferred from one DOM error name. The
+mistake was the method, not any individual guess: `NotReadableError` is
+Chromium's catch-all for "the platform would not start the capture", and it
+carries no information about why. No fourth guess at the same layer was going
+to be better than the first three.
+
+So the capture moved below it. `MicCapture.kt` opens `AudioRecord` directly —
+the primitive Chromium's own capture is built on — which removes the WebView
+permission gate, device enumeration, constraint negotiation and the
+audio-service IPC in one go. It walks a source ladder (`UNPROCESSED`,
+`VOICE_RECOGNITION`, `MIC`, `DEFAULT`), and a source only counts as working
+once it has actually yielded a block of samples, because a source can
+initialise and start and still hand over nothing.
+
+Two things this buys beyond reliability. `UNPROCESSED` gets a signal with no
+noise suppression applied, which is what the raw constraints were asking for
+and could not get. And every failure now carries a state, a return code or an
+exception per source, so the next readout will name a cause rather than
+offering one word to guess from.
+
+Kotlin measures, the web layer decides. `MicCapture` publishes two band
+energies (below 450 Hz, above 1200 Hz) via one-pole filters; `AirModel.applyBlow`
+turns those into a blow strength. That split matters because the decision is
+then testable without a phone, which it now is.
+
+The threshold **adapts** rather than being a constant. Native capture reports a
+plain RMS whose scale depends on the phone's microphone sensitivity and on
+which source the ladder settled on — neither measurable from here. Guessing a
+fixed number would have been the same mistake a fourth time. It tracks the
+quiet level instead and asks for a large multiple of it, falling onto a new
+quiet level in a tenth of a second and drifting up from one over about twenty
+seconds. The asymmetry is load-bearing: a puff must not drag its own reference
+up with it (an earlier symmetric version did exactly that, and the test caught
+it), while a fan should become the new normal instead of holding the candle out
+forever.
+
+The WebView path is kept as the fallback, so a plain browser and the headless
+checks are unaffected.
+
+**Untested on the device as of writing.** If `AudioRecord` fails too, the
+problem is genuinely outside the app — MIUI's privacy layer is then the
+suspect — and the readout will say so in the platform's own words.
 
 ### 2026-08-30 — lessons that changed how the work is checked
 

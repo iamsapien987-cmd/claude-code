@@ -44,7 +44,8 @@ export class AirModel {
     this.draftX = this.draftX * a + (Math.random() * 2 - 1) * noise * 1.7;
     this.draftY = this.draftY * a + (Math.random() * 2 - 1) * noise * 0.6;
 
-    if (this.analyser) this.sampleMic();
+    if (this.nativeMic) this.sampleNativeMic();
+    else if (this.analyser) this.sampleMic();
     else this.blow *= Math.exp(-dt / 0.25);
 
     const u = Math.abs(this.windX()) ;
@@ -104,8 +105,44 @@ export class AirModel {
     });
   }
 
+  /**
+   * Capture through the native shell, which does not use the WebView's media
+   * stack at all.
+   *
+   * This is tried first when the shell offers it. getUserMedia has failed on
+   * a real device with every WebView-side cause ruled out - permission held,
+   * secure context, a device enumerated, no activity pause, and a bare
+   * { audio: true } refused - so on Android the browser path is now the
+   * fallback rather than the other way round. In a plain browser there is no
+   * shell and nothing changes.
+   */
+  enableNativeMic() {
+    const host = window.CandleHost;
+    if (!host || typeof host.startMic !== 'function') return false;
+    this.micMode = 'native';
+    this.micAttempts += 1;
+    let ok = false;
+    try {
+      ok = host.startMic() === true;
+    } catch (e) {
+      this.micError = 'native capture threw';
+      return false;
+    }
+    if (!ok) {
+      this.micError = 'native capture refused';
+      return false;
+    }
+    this.nativeMic = true;
+    this.micReady = true;
+    this.micError = null;
+    this.quiet = undefined;
+    return true;
+  }
+
   async enableMic() {
-    if (this.analyser) return true;
+    if (this.analyser || this.nativeMic) return true;
+    this.micAttempts = 0;
+    if (this.enableNativeMic()) return true;
 
     // How many audio inputs does the WebView believe exist? If this is zero
     // the problem is upstream of anything this app is asking for.
@@ -146,8 +183,6 @@ export class AirModel {
       { label: 'plain', wait: 300, constraints: { audio: true } },
       { label: 'plain retry', wait: 900, constraints: { audio: true } },
     ];
-    this.micAttempts = 0;
-
     for (const step of ATTEMPTS) {
       if (step.wait) await new Promise((r) => setTimeout(r, step.wait));
       try {
@@ -184,11 +219,59 @@ export class AirModel {
   }
 
   disableMic() {
+    if (this.nativeMic) {
+      try { window.CandleHost.stopMic(); } catch (e) { /* already gone */ }
+      this.nativeMic = false;
+    }
     if (this.stream) for (const t of this.stream.getTracks()) t.stop();
     this.stream = null;
     this.analyser = null;
     this.micReady = false;
     this.blow = 0;
+  }
+
+  /** Read the two band energies the native capture publishes. */
+  sampleNativeMic() {
+    let parts;
+    try {
+      parts = window.CandleHost.micLevels().split(',');
+    } catch (e) {
+      return;
+    }
+    const low = parseFloat(parts[0]);
+    const high = parseFloat(parts[1]);
+    if (!(low >= 0) || !(high >= 0)) return;
+    this.applyBlow(low, high);
+  }
+
+  /**
+   * Decide how hard you are blowing, from the energy in the two bands.
+   *
+   * The threshold adapts to the room rather than being a constant. Native
+   * capture reports a plain RMS whose scale depends on the sensitivity of the
+   * phone's microphone and on which audio source the ladder settled on, and
+   * neither of those can be measured from here - guessing a fixed number
+   * would be the same mistake that cost three attempts at this already.
+   * Tracking the quiet level and asking for a large multiple of it works
+   * whatever that scale turns out to be.
+   */
+  applyBlow(low, high) {
+    if (this.quiet === undefined) this.quiet = low;
+    // Settle onto a new quiet level quickly, drift up from it very slowly.
+    // The asymmetry is the whole point: a puff lasts under a second and must
+    // not drag its own reference up with it, while a fan or traffic outside
+    // should become the new normal over about twenty seconds rather than
+    // holding the candle out indefinitely.
+    this.quiet += (low - this.quiet) * (low < this.quiet ? 0.08 : 0.0008);
+    const floor = Math.max(this.quiet * 3.5, 0.004);
+    const span = Math.max(this.quiet * 14, 0.05);
+    const level = Math.max(0, (low - floor) / span);
+    // A puff is loud low down and comparatively quiet up top.
+    const ratio = low / (high + 1e-9);
+    const isBreath = ratio > 2.2 ? 1 : Math.max(0, (ratio - 1.1) / 1.1);
+    const target = Math.min(1, level * isBreath);
+    // Rise fast, fall slowly: a flame keeps moving after the puff stops.
+    this.blow += (target - this.blow) * (target > this.blow ? 0.55 : 0.10);
   }
 
   sampleMic() {
@@ -248,6 +331,15 @@ export function micDiagnostics(air) {
   lines.push(`last mode: ${air.micMode || 'none'}`);
   lines.push(`audio inputs: ${air.inputCount === undefined ? 'unknown' : air.inputCount}`);
   lines.push(`native shell: ${host ? 'yes' : 'no'}`);
+  lines.push(`capture: ${air.nativeMic ? 'native' : (air.analyser ? 'webview' : 'none')}`);
+  if (host && typeof host.micReport === 'function') {
+    try {
+      const report = host.micReport();
+      if (report) lines.push(report);
+    } catch (e) {
+      lines.push('native report: unavailable');
+    }
+  }
   if (host && typeof host.hasMicPermission === 'function') {
     try {
       lines.push(`OS permission: ${host.hasMicPermission() ? 'granted' : 'not granted'}`);

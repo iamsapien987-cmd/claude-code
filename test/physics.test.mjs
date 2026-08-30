@@ -217,6 +217,37 @@ test('a hard enough puff puts the candle out, ordinary breathing does not', () =
   assert.ok(puff.shouldExtinguish(), 'a real puff should blow it out');
 });
 
+test('native blow detection separates a puff from a room and from speech', () => {
+  // Native capture reports a plain RMS, so the numbers here are in units of
+  // full scale: a quiet room sits around 0.002, a breath straight at the
+  // phone saturates. The threshold adapts, which is what these check.
+  const quiet = new AirModel();
+  for (let i = 0; i < 200; i++) quiet.applyBlow(0.002, 0.0015);
+  assert.ok(quiet.blow < 0.05, `a quiet room should not register (${quiet.blow})`);
+
+  // Talking nearby is loud, but its energy is not concentrated low down.
+  const speech = new AirModel();
+  for (let i = 0; i < 200; i++) speech.applyBlow(0.002, 0.0015);
+  for (let i = 0; i < 60; i++) speech.applyBlow(0.05, 0.045);
+  assert.ok(speech.blow < 0.1, `speech should not register (${speech.blow})`);
+
+  // A real puff: loud, and overwhelmingly low-frequency.
+  const blown = new AirModel();
+  for (let i = 0; i < 200; i++) blown.applyBlow(0.002, 0.0015);
+  for (let i = 0; i < 20; i++) blown.applyBlow(0.12, 0.015);
+  assert.ok(blown.blow > 0.8, `a puff should register (${blown.blow})`);
+
+  // Steady low-frequency noise - a fan, traffic - becomes the new quiet
+  // rather than holding the candle out indefinitely.
+  const fan = new AirModel();
+  for (let i = 0; i < 200; i++) fan.applyBlow(0.002, 0.0015);
+  for (let i = 0; i < 30; i++) fan.applyBlow(0.02, 0.005);
+  const onset = fan.blow;
+  for (let i = 0; i < 600; i++) fan.applyBlow(0.02, 0.005);
+  assert.ok(fan.blow < onset * 0.3,
+    `steady noise should stop registering (${onset} -> ${fan.blow})`);
+});
+
 // ---------------------------------------------------------------- colour
 test('flame colour comes out of Planck\'s law, not a palette', () => {
   // 1850 K is the correlated colour temperature of candlelight; it should

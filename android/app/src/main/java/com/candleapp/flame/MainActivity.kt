@@ -35,6 +35,19 @@ class MainActivity : ComponentActivity() {
     private lateinit var web: WebView
     private var failed = false
 
+    /**
+     * Microphone capture, done here rather than through the WebView.
+     *
+     * See MicCapture for why. Briefly: getUserMedia fails on at least one
+     * real device with NotReadableError under conditions that rule out every
+     * cause the WebView layer could have, and AudioRecord is the primitive
+     * underneath it.
+     */
+    private val mic = MicCapture()
+
+    /** Whether the user has the microphone switched on in the app. */
+    private var micWanted = false
+
     private fun hasMic() =
         checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
 
@@ -242,6 +255,37 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        /**
+         * Open the microphone natively. Returns false if it would not open,
+         * with micReport carrying what each audio source said about it.
+         */
+        @android.webkit.JavascriptInterface
+        fun startMic(): Boolean {
+            if (!hasMic()) return false
+            micWanted = mic.start()
+            return micWanted
+        }
+
+        @android.webkit.JavascriptInterface
+        fun stopMic() {
+            micWanted = false
+            mic.stop()
+        }
+
+        /** Low band, high band and a sequence counter, polled every frame. */
+        @android.webkit.JavascriptInterface
+        fun micLevels(): String = mic.levels()
+
+        /** What the capture is doing, or what refused, for the readout. */
+        @android.webkit.JavascriptInterface
+        fun micReport(): String {
+            val parts = ArrayList<String>()
+            parts.add("source: ${mic.source}")
+            if (mic.attempts.isNotEmpty()) parts.add("tried: ${mic.attempts.trim()}")
+            mic.error?.let { parts.add("native error: $it") }
+            return parts.joinToString("\n")
+        }
+
         // JavaScript has only doubles, so take one rather than relying on the
         // bridge to narrow it for us.
         @android.webkit.JavascriptInterface
@@ -258,6 +302,10 @@ class MainActivity : ComponentActivity() {
     override fun onPause() {
         super.onPause()
         resumed = false
+        // Never hold the microphone open in the background. The candle is
+        // snuffed on leaving anyway, and an app that keeps recording once it
+        // is out of sight is exactly what the permission is there to prevent.
+        mic.stop()
         web.onPause()
         // Stops the simulation entirely while backgrounded. The focus session
         // is paused on the web side by the Page Visibility API, so the two
@@ -270,11 +318,16 @@ class MainActivity : ComponentActivity() {
         web.resumeTimers()
         web.onResume()
         resumed = true
+        // Reopen the microphone if it was on when we left, so returning to
+        // the app does not silently leave the feature switched off in the
+        // interface but dead underneath it.
+        if (micWanted && !mic.active) micWanted = mic.start()
         // Deliver any permission answer that arrived while we were paused.
         flushMicResult()
     }
 
     override fun onDestroy() {
+        mic.stop()
         // Detach before destroying. A WebView that is destroyed while still
         // attached to the view tree is a documented way to get a crash on
         // some devices.
