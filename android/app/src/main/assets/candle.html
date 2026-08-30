@@ -249,6 +249,8 @@ body.locked #ui, body.locked #timerBar { opacity: 0; pointer-events: none; }
   pointer-events: none;
   max-width: 82vw;
   text-align: center;
+  white-space: pre-line;
+  line-height: 1.7;
 }
 #toast.on { opacity: 1; transform: translate(-50%, 0); }
 
@@ -1762,6 +1764,7 @@ class AirModel {
     this.extinguishFor = 0; // s, how long we have been past the critical strain
     this.micReady = false;
     this.micError = null;
+    this.micAttempts = 0;
     this.enabled = true;
   }
 
@@ -1861,8 +1864,15 @@ class AirModel {
       },
     };
 
-    for (let attempt = 0; attempt < 2; attempt++) {
+    // Backoff between attempts. A microphone that has just been released, or
+    // an audio stack still coming up after the permission dialog, needs longer
+    // than one short retry allowed for.
+    const BACKOFF_MS = [350, 900, 1800];
+    this.micAttempts = 0;
+
+    for (let attempt = 0; attempt < BACKOFF_MS.length + 1; attempt++) {
       try {
+        this.micAttempts = attempt + 1;
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
         const Ctx = window.AudioContext || window.webkitAudioContext;
         this.audioCtx = this.audioCtx || new Ctx();
@@ -1885,8 +1895,11 @@ class AirModel {
         // would not start - usually because something else is holding the
         // microphone, or it has just been released and has not settled. One
         // retry after a short pause clears the transient case.
-        if (name === 'NotReadableError' && attempt === 0) {
-          await new Promise((r) => setTimeout(r, 400));
+        // NotReadableError means the permission was fine but the device would
+        // not open: something else is holding it, or it has not settled yet.
+        // Anything else is final and retrying only delays the message.
+        if (name === 'NotReadableError' && attempt < BACKOFF_MS.length) {
+          await new Promise((r) => setTimeout(r, BACKOFF_MS[attempt]));
           continue;
         }
         return false;
@@ -1939,6 +1952,31 @@ class AirModel {
     };
     window.addEventListener('deviceorientation', this._tiltBound, true);
   }
+}
+
+/**
+ * A plain-text account of why the microphone is not working.
+ *
+ * The toast tells you what to do; this tells you what actually happened, so a
+ * failure on a device I cannot reach can be screenshotted and sent back
+ * rather than guessed at. Reached by holding the microphone button.
+ */
+function micDiagnostics(air) {
+  const host = window.CandleHost;
+  const lines = [];
+  lines.push(`error: ${air.micError || 'none'}`);
+  lines.push(`attempts: ${air.micAttempts || 0}`);
+  lines.push(`native shell: ${host ? 'yes' : 'no'}`);
+  if (host && typeof host.hasMicPermission === 'function') {
+    try {
+      lines.push(`OS permission: ${host.hasMicPermission() ? 'granted' : 'not granted'}`);
+    } catch (e) {
+      lines.push('OS permission: check failed');
+    }
+  }
+  lines.push(`getUserMedia: ${navigator.mediaDevices ? 'available' : 'missing'}`);
+  lines.push(`secure context: ${window.isSecureContext ? 'yes' : 'no'}`);
+  return lines.join('\n');
 }
 
 // ==================================================================
@@ -2924,17 +2962,34 @@ function wake() {
   window.addEventListener(ev, wake, { passive: true }));
 
 let toastTimer = 0;
-function showToast(msg) {
+function showToast(msg, ms = 3400) {
   toast.textContent = msg;
   toast.classList.add('on');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => toast.classList.remove('on'), 3400);
+  toastTimer = setTimeout(() => toast.classList.remove('on'), ms);
 }
 
 function press(el, on) { el.setAttribute('aria-pressed', on ? 'true' : 'false'); }
 
+// Hold the microphone button to see exactly what went wrong, in a form that
+// can be screenshotted and sent to someone who cannot reach the device.
+let micHoldTimer = 0;
+let micHeld = false;
+btn.mic.addEventListener('pointerdown', () => {
+  micHeld = false;
+  clearTimeout(micHoldTimer);
+  micHoldTimer = setTimeout(() => {
+    micHeld = true;
+    buzz(18);
+    showToast(micDiagnostics(air), 9000);
+  }, 600);
+});
+['pointerup', 'pointercancel', 'pointerleave'].forEach((ev) =>
+  btn.mic.addEventListener(ev, () => clearTimeout(micHoldTimer)));
+
 // Microphone blow-out.
 btn.mic.addEventListener('click', async () => {
+  if (micHeld) { micHeld = false; return; }
   if (air.micReady) { air.disableMic(); press(btn.mic, false); showToast('Microphone off'); return; }
   showToast('Allow the microphone, then blow at your phone');
   const ok = await air.enableMic();
@@ -2944,7 +2999,7 @@ btn.mic.addEventListener('click', async () => {
   const why = {
     'permission refused': 'Microphone permission was declined. Allow it in Settings to blow the candle out.',
     NotAllowedError: 'Microphone permission was declined. Allow it in Settings to blow the candle out.',
-    NotReadableError: 'Another app is using the microphone. Close it and try again.',
+    NotReadableError: 'The microphone would not open. Close any app that might be using it, then try again. Hold this button for details.',
     NotFoundError: 'No microphone found on this device.',
   }[air.micError];
   showToast(why || `Microphone unavailable (${air.micError})`);

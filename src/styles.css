@@ -240,6 +240,8 @@ body.locked #ui, body.locked #timerBar { opacity: 0; pointer-events: none; }
   pointer-events: none;
   max-width: 82vw;
   text-align: center;
+  white-space: pre-line;
+  line-height: 1.7;
 }
 #toast.on { opacity: 1; transform: translate(-50%, 0); }
 

@@ -25,6 +25,7 @@ export class AirModel {
     this.extinguishFor = 0; // s, how long we have been past the critical strain
     this.micReady = false;
     this.micError = null;
+    this.micAttempts = 0;
     this.enabled = true;
   }
 
@@ -124,8 +125,15 @@ export class AirModel {
       },
     };
 
-    for (let attempt = 0; attempt < 2; attempt++) {
+    // Backoff between attempts. A microphone that has just been released, or
+    // an audio stack still coming up after the permission dialog, needs longer
+    // than one short retry allowed for.
+    const BACKOFF_MS = [350, 900, 1800];
+    this.micAttempts = 0;
+
+    for (let attempt = 0; attempt < BACKOFF_MS.length + 1; attempt++) {
       try {
+        this.micAttempts = attempt + 1;
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
         const Ctx = window.AudioContext || window.webkitAudioContext;
         this.audioCtx = this.audioCtx || new Ctx();
@@ -148,8 +156,11 @@ export class AirModel {
         // would not start - usually because something else is holding the
         // microphone, or it has just been released and has not settled. One
         // retry after a short pause clears the transient case.
-        if (name === 'NotReadableError' && attempt === 0) {
-          await new Promise((r) => setTimeout(r, 400));
+        // NotReadableError means the permission was fine but the device would
+        // not open: something else is holding it, or it has not settled yet.
+        // Anything else is final and retrying only delays the message.
+        if (name === 'NotReadableError' && attempt < BACKOFF_MS.length) {
+          await new Promise((r) => setTimeout(r, BACKOFF_MS[attempt]));
           continue;
         }
         return false;
@@ -202,4 +213,29 @@ export class AirModel {
     };
     window.addEventListener('deviceorientation', this._tiltBound, true);
   }
+}
+
+/**
+ * A plain-text account of why the microphone is not working.
+ *
+ * The toast tells you what to do; this tells you what actually happened, so a
+ * failure on a device I cannot reach can be screenshotted and sent back
+ * rather than guessed at. Reached by holding the microphone button.
+ */
+export function micDiagnostics(air) {
+  const host = window.CandleHost;
+  const lines = [];
+  lines.push(`error: ${air.micError || 'none'}`);
+  lines.push(`attempts: ${air.micAttempts || 0}`);
+  lines.push(`native shell: ${host ? 'yes' : 'no'}`);
+  if (host && typeof host.hasMicPermission === 'function') {
+    try {
+      lines.push(`OS permission: ${host.hasMicPermission() ? 'granted' : 'not granted'}`);
+    } catch (e) {
+      lines.push('OS permission: check failed');
+    }
+  }
+  lines.push(`getUserMedia: ${navigator.mediaDevices ? 'available' : 'missing'}`);
+  lines.push(`secure context: ${window.isSecureContext ? 'yes' : 'no'}`);
+  return lines.join('\n');
 }

@@ -9,7 +9,7 @@
 
 import { FlameField } from './fluid.js';
 import { WaxBody } from './wax.js';
-import { AirModel } from './air.js';
+import { AirModel, micDiagnostics } from './air.js';
 import { Renderer } from './renderer.js';
 import { Crackle } from './audio.js';
 import { CANDLE_HEIGHT_0, LUMINOUS_INTENSITY } from './constants.js';
@@ -211,17 +211,34 @@ function wake() {
   window.addEventListener(ev, wake, { passive: true }));
 
 let toastTimer = 0;
-function showToast(msg) {
+function showToast(msg, ms = 3400) {
   toast.textContent = msg;
   toast.classList.add('on');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => toast.classList.remove('on'), 3400);
+  toastTimer = setTimeout(() => toast.classList.remove('on'), ms);
 }
 
 function press(el, on) { el.setAttribute('aria-pressed', on ? 'true' : 'false'); }
 
+// Hold the microphone button to see exactly what went wrong, in a form that
+// can be screenshotted and sent to someone who cannot reach the device.
+let micHoldTimer = 0;
+let micHeld = false;
+btn.mic.addEventListener('pointerdown', () => {
+  micHeld = false;
+  clearTimeout(micHoldTimer);
+  micHoldTimer = setTimeout(() => {
+    micHeld = true;
+    buzz(18);
+    showToast(micDiagnostics(air), 9000);
+  }, 600);
+});
+['pointerup', 'pointercancel', 'pointerleave'].forEach((ev) =>
+  btn.mic.addEventListener(ev, () => clearTimeout(micHoldTimer)));
+
 // Microphone blow-out.
 btn.mic.addEventListener('click', async () => {
+  if (micHeld) { micHeld = false; return; }
   if (air.micReady) { air.disableMic(); press(btn.mic, false); showToast('Microphone off'); return; }
   showToast('Allow the microphone, then blow at your phone');
   const ok = await air.enableMic();
@@ -231,7 +248,7 @@ btn.mic.addEventListener('click', async () => {
   const why = {
     'permission refused': 'Microphone permission was declined. Allow it in Settings to blow the candle out.',
     NotAllowedError: 'Microphone permission was declined. Allow it in Settings to blow the candle out.',
-    NotReadableError: 'Another app is using the microphone. Close it and try again.',
+    NotReadableError: 'The microphone would not open. Close any app that might be using it, then try again. Hold this button for details.',
     NotFoundError: 'No microphone found on this device.',
   }[air.micError];
   showToast(why || `Microphone unavailable (${air.micError})`);

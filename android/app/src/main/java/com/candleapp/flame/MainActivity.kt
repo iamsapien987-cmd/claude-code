@@ -41,6 +41,9 @@ class MainActivity : ComponentActivity() {
     private companion object {
         /** The virtual host WebViewAssetLoader serves the assets from. */
         const val ASSET_HOST = "appassets.androidplatform.net"
+
+        /** How long to let the WebView settle after resuming before capture. */
+        const val MIC_RESUME_SETTLE_MS = 450L
     }
 
     private val micPermission = registerForActivityResult(
@@ -60,10 +63,22 @@ class MainActivity : ComponentActivity() {
     private fun flushMicResult() {
         val granted = micResult ?: return
         micResult = null
-        web.evaluateJavascript(
-            "window.__candleMicPermission && window.__candleMicPermission($granted)",
-            null
-        )
+        // Wait for the WebView to actually settle before telling the page it
+        // may open the microphone.
+        //
+        // onResume calls resumeTimers and onResume on the WebView and then
+        // returns; the audio stack is still coming back up at that moment.
+        // Delivering the answer synchronously meant getUserMedia was issued
+        // in the same instant, and it failed with NotReadableError - the
+        // error for "permission is fine, the device would not open". Half a
+        // second is imperceptible after a permission dialog and is comfortably
+        // past it.
+        web.postDelayed({
+            web.evaluateJavascript(
+                "window.__candleMicPermission && window.__candleMicPermission($granted)",
+                null
+            )
+        }, MIC_RESUME_SETTLE_MS)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
