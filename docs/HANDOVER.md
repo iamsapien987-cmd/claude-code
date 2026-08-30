@@ -66,6 +66,7 @@ running on the user's phone (Xiaomi/MIUI).
 | Light pool at the base | ✅ user-confirmed fixed |
 | Focus timer + candle shrinking | ✅ user-confirmed over a full session |
 | Microphone blow-out | ✅ user-confirmed, on native `AudioRecord` capture |
+| Screen returns to black in zen too | ✅ fixed after user report |
 | Double-tap to wake, ring to relight | ✅ user-confirmed |
 | System bars hidden, incl. after the mic | ✅ user-confirmed |
 | Full 25-minute focus run | ✅ user-confirmed |
@@ -280,6 +281,41 @@ which request shape was last tried.
 **Untested on the device as of writing.** If it fails again, `audio inputs: 0`
 would point upstream of this app entirely — MIUI's privacy layer is the
 suspect — while a success on `plain` confirms the constraint theory.
+
+### 2026-08-30 — one failure per install, and zen that never went dark
+
+**The microphone failed exactly once per install, then worked forever.** The
+user spotted the pattern; it is the whole diagnosis. `enableMic` ran
+`enableNativeMic()` *before* `ensureHostPermission()`, and `startMic` returns
+false when the permission is not held. So the first tap on a fresh install hit
+a native path that refused before the user had even been asked, fell through to
+the getUserMedia ladder, which asked for permission and then failed the way it
+always does on that device. Every later tap reached the native path, because
+the permission was by then held — including across restarts, which is why it
+looked like a first-run-only curse.
+
+Ordering bug of my own making, introduced when the native path was added: the
+permission call was left where it had been, guarding only the fallback. The
+permission now precedes both paths.
+
+Worth keeping as a rule: **when a fault is "only the first time", suspect
+acquisition order, not the thing that failed.** The diagnostics readout was
+honest throughout — it said the permission was granted, because by the time it
+was read, it was.
+
+**Zen never returned to black.** `wake()` returned early in zen without arming
+the idle timer, so a single tap brought the interface back permanently — which
+defeats zen, and with the candle out held the panel at the readable brightness
+instead of dropping to 0.03. Zen now arms the timer like everywhere else.
+
+`darkRest()` no longer excludes zen either, so a dark screen takes the same
+double tap whatever mode it is in. The user asked for zen to behave exactly as
+normal mode does, and an accidental brush should not light the panel because
+zen happens to be on. With the candle lit, zen's tap-anywhere behaviour is
+untouched.
+
+`tap-check.mjs` is at 34 checks; the zen re-hide check was confirmed to fail
+with the fix reverted.
 
 ### 2026-08-30 — a focus session that could not be resumed
 

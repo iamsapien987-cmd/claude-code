@@ -31,6 +31,13 @@ const tap = async (x, y) => {
   await page.touchscreen.tap(x, y);
   await page.waitForTimeout(250);
 };
+/** Two taps inside the 400 ms window the app looks for. */
+const doubleTap = async (x, y) => {
+  await page.touchscreen.tap(x, y);
+  await page.waitForTimeout(80);
+  await page.touchscreen.tap(x, y);
+  await page.waitForTimeout(400);
+};
 /** Where the flame is right now, in CSS pixels. */
 const flamePoint = () => page.evaluate(() => {
   const r = window.__candle.renderer;
@@ -194,14 +201,35 @@ check('zen hides the interface', await uiHidden());
 await page.evaluate(() => window.__candle.extinguish(null));
 await page.waitForTimeout(600);
 check('...and the ring stays away while it does', await relightBox() === null);
+
+// A dark screen is a dark screen: zen gets the same double tap as anywhere
+// else, so a brush of the hand cannot light the panel.
 await tap(120, 300);
-check('a tap in zen brings the controls back', await uiHidden() === false);
+check('a single tap in zen does not wake a dark screen', await uiHidden() === true);
+await page.waitForTimeout(600);
+await doubleTap(120, 300);
+check('a double tap in zen wakes it', await uiHidden() === false);
 const zenRing = await relightBox();
-check('...and the ring comes with them', zenRing !== null);
-if (zenRing) {
-  await tap(zenRing.x, zenRing.y);
+check('...and the ring comes with it', zenRing !== null);
+
+// The fault this covers: wake() used to skip arming the idle timer in zen, so
+// one tap brought the interface back for good and the screen never returned to
+// black the way it does everywhere else.
+await idle();
+check('...and zen goes dark again on its own', await uiHidden() === true);
+
+await doubleTap(120, 300);
+const zenRing2 = await relightBox();
+check('the ring is still there after waking again', zenRing2 !== null);
+if (zenRing2) {
+  await tap(zenRing2.x, zenRing2.y);
   check('the ring lights the candle in zen', await lit() === true);
 }
+
+// Leave zen for the next section.
+await tap(120, 300);
+await page.click('#btnZen');
+await page.waitForTimeout(300);
 
 // 9. A focus session must not get stuck paused.
 //

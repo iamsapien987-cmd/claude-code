@@ -1964,6 +1964,28 @@ class AirModel {
   async enableMic() {
     if (this.analyser || this.nativeMic) return true;
     this.micAttempts = 0;
+
+    // The OS permission comes first, before *either* capture path.
+    //
+    // It is acquired here rather than inside getUserMedia because asking from
+    // in there pauses the activity, which suspends the WebView and tears the
+    // media stack down under the in-flight request; that came back as
+    // NotReadableError on a real device.
+    //
+    // It also has to precede the native path, which is what went wrong on a
+    // fresh install. startMic returns false when the permission is not held,
+    // so on the very first tap the native attempt was refused before the user
+    // had been asked - and the code fell through to the WebView ladder, which
+    // asked for permission and then failed the way it always does on that
+    // device. Every later tap worked, because by then the permission was
+    // held and the native path was reached. One failure per install, which is
+    // exactly the first impression the app cannot afford.
+    const permitted = await this.ensureHostPermission();
+    if (!permitted) {
+      this.micError = 'permission refused';
+      return false;
+    }
+
     if (this.enableNativeMic()) return true;
 
     // How many audio inputs does the WebView believe exist? If this is zero
@@ -1973,16 +1995,6 @@ class AirModel {
       this.inputCount = devices.filter((d) => d.kind === 'audioinput').length;
     } catch (e) {
       this.inputCount = -1;
-    }
-
-    // The OS permission is acquired *before* getUserMedia, never during it.
-    // Asking from inside the getUserMedia call pauses the activity, which
-    // suspends the WebView and tears the media stack down under the in-flight
-    // request; it came back as NotReadableError on a real device.
-    const permitted = await this.ensureHostPermission();
-    if (!permitted) {
-      this.micError = 'permission refused';
-      return false;
     }
 
     // Ask for the ideal capture first, then fall back.
@@ -3227,7 +3239,11 @@ function wake() {
   if (state.locked) return;
   ui.classList.remove('dim');
   clearTimeout(idleTimer);
-  if (state.zen) return;
+  // Zen is not an exception to this. It used to return here without arming
+  // the timer, so one tap in zen brought the interface back for good - which
+  // defeats zen, and with the candle out left the screen sitting at its
+  // readable brightness instead of going back to black the way it does
+  // everywhere else.
   idleTimer = setTimeout(() => ui.classList.add('dim'), 4200);
   // Coming back from the dark should feel immediate rather than waiting on
   // the quarter-second readout tick.
@@ -3238,12 +3254,13 @@ function wake() {
  * The state a snuffed candle settles into: nothing lit, and the screen has
  * taken itself down to black.
  *
- * Zen is excluded on purpose. Its whole contract is "tap anywhere to bring the
- * controls back", and that should keep working whether or not the candle
- * happens to be alight.
+ * Zen is not excluded. A dark screen is a dark screen: an accidental brush
+ * should not light the panel just because zen happens to be on, and the user
+ * asked for zen to behave exactly as it does elsewhere. With the candle lit,
+ * zen's "tap anywhere to bring the controls back" is untouched.
  */
 function darkRest() {
-  return !state.lit && !state.locked && !state.zen && ui.classList.contains('dim');
+  return !state.lit && !state.locked && ui.classList.contains('dim');
 }
 
 /**

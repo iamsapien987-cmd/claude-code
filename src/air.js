@@ -142,6 +142,28 @@ export class AirModel {
   async enableMic() {
     if (this.analyser || this.nativeMic) return true;
     this.micAttempts = 0;
+
+    // The OS permission comes first, before *either* capture path.
+    //
+    // It is acquired here rather than inside getUserMedia because asking from
+    // in there pauses the activity, which suspends the WebView and tears the
+    // media stack down under the in-flight request; that came back as
+    // NotReadableError on a real device.
+    //
+    // It also has to precede the native path, which is what went wrong on a
+    // fresh install. startMic returns false when the permission is not held,
+    // so on the very first tap the native attempt was refused before the user
+    // had been asked - and the code fell through to the WebView ladder, which
+    // asked for permission and then failed the way it always does on that
+    // device. Every later tap worked, because by then the permission was
+    // held and the native path was reached. One failure per install, which is
+    // exactly the first impression the app cannot afford.
+    const permitted = await this.ensureHostPermission();
+    if (!permitted) {
+      this.micError = 'permission refused';
+      return false;
+    }
+
     if (this.enableNativeMic()) return true;
 
     // How many audio inputs does the WebView believe exist? If this is zero
@@ -151,16 +173,6 @@ export class AirModel {
       this.inputCount = devices.filter((d) => d.kind === 'audioinput').length;
     } catch (e) {
       this.inputCount = -1;
-    }
-
-    // The OS permission is acquired *before* getUserMedia, never during it.
-    // Asking from inside the getUserMedia call pauses the activity, which
-    // suspends the WebView and tears the media stack down under the in-flight
-    // request; it came back as NotReadableError on a real device.
-    const permitted = await this.ensureHostPermission();
-    if (!permitted) {
-      this.micError = 'permission refused';
-      return false;
     }
 
     // Ask for the ideal capture first, then fall back.

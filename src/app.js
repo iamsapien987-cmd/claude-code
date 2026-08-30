@@ -271,7 +271,11 @@ function wake() {
   if (state.locked) return;
   ui.classList.remove('dim');
   clearTimeout(idleTimer);
-  if (state.zen) return;
+  // Zen is not an exception to this. It used to return here without arming
+  // the timer, so one tap in zen brought the interface back for good - which
+  // defeats zen, and with the candle out left the screen sitting at its
+  // readable brightness instead of going back to black the way it does
+  // everywhere else.
   idleTimer = setTimeout(() => ui.classList.add('dim'), 4200);
   // Coming back from the dark should feel immediate rather than waiting on
   // the quarter-second readout tick.
@@ -282,12 +286,13 @@ function wake() {
  * The state a snuffed candle settles into: nothing lit, and the screen has
  * taken itself down to black.
  *
- * Zen is excluded on purpose. Its whole contract is "tap anywhere to bring the
- * controls back", and that should keep working whether or not the candle
- * happens to be alight.
+ * Zen is not excluded. A dark screen is a dark screen: an accidental brush
+ * should not light the panel just because zen happens to be on, and the user
+ * asked for zen to behave exactly as it does elsewhere. With the candle lit,
+ * zen's "tap anywhere to bring the controls back" is untouched.
  */
 function darkRest() {
-  return !state.lit && !state.locked && !state.zen && ui.classList.contains('dim');
+  return !state.lit && !state.locked && ui.classList.contains('dim');
 }
 
 /**
