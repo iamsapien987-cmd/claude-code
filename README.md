@@ -56,6 +56,41 @@ flame; running that transform forwards is what gives the flame its width and
 its bright limb. Then Reinhard tone mapping, because a flame covers far more
 dynamic range than a screen does.
 
+## Built for OLED
+
+Most Android phones this would run on have OLED screens, where a black pixel
+is switched off rather than dark. That changes what "realistic" means: any
+pixel that is not black is the display emitting light, and in a dark room a
+faint glow spread across the whole panel reads immediately as a screen rather
+than as a flame.
+
+So light in this app **stops**. Both the glare around the flame and the pool of
+light on the surface are tapered to zero well inside their own radius, and any
+value that would not survive quantisation to 8 bits is snapped to zero rather
+than left as one count across half the screen. Outside those regions nothing
+is drawn at all, so the pixels stay off.
+
+This is also the more physically honest rendering. The full-screen wash that
+was there before represented light scattering off nothing — the scene has no
+wall and no dust for it to bounce from.
+
+Roughly 55-62% of the frame is genuinely off, depending on the dial, against
+0% before. `tools/oled.mjs` measures it and fails if it regresses:
+
+```bash
+I=1.0 node tools/oled.mjs
+```
+
+The native shell also declines to drive the backlight anywhere near full. A
+candle is about one candela — a few lux at arm's length — while a phone at
+full brightness is hundreds of nits, and on OLED brightness scales every lit
+pixel at once. The dial maps to 8-70% of panel brightness.
+
+Screen burn-in is the other OLED concern for an app meant to be left running.
+It is mitigated by the simulation rather than by a screensaver: the flame is
+never still, and the candle measurably burns down, so the bright region drifts
+down the screen over a session instead of sitting on one set of pixels.
+
 ## Running it
 
 ```bash

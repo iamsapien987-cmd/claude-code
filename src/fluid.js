@@ -116,7 +116,7 @@ export class FlameField {
     // Tunables with physical meaning.
     this.vorticityEps = 1.15;  // strength of vorticity confinement
     this.fuelBase = 3.2;       // fuel supply with the wick trimmed right down
-    this.fuelRange = 2.2;      // extra supply at the top of the dial's range
+    this.fuelRange = 1.8;      // extra supply at the top of the dial's range
     this.burnRate = 55.0;      // 1/s, reaction rate once fuel and air have met
     this.heatPerFuel = 7600;   // K per unit fuel fraction burnt
     this.sootYield = 220;      // how fast soot approaches its loading, per unit fuel

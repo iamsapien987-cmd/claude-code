@@ -346,8 +346,16 @@ function effectiveIntensity() {
 function syncHostBrightness() {
   const host = window.CandleHost;
   if (!host || typeof host.setBrightness !== 'function') return;
+  // Deliberately not driving the panel anywhere near full.
+  //
+  // A candle is about one candela: at arm's length that is a few lux, which
+  // is very dim indeed, while a phone at full brightness is hundreds of nits.
+  // On an OLED, brightness scales every lit pixel at once, so running the
+  // backlight high would make a dark room glow orange and give the whole
+  // illusion away - quite apart from the battery. This range reads as a
+  // candle in the dark and still has headroom in a lit room.
   const target = state.lit
-    ? Math.max(0.10, Math.min(1, renderer.luminance() * 0.92))
+    ? OLED_MIN_BRIGHTNESS + renderer.luminance() * (OLED_MAX_BRIGHTNESS - OLED_MIN_BRIGHTNESS)
     : 0.03;
   // Ease towards it: matching the flicker frame for frame would make the
   // backlight buzz, because the panel responds far more slowly than the
@@ -359,7 +367,9 @@ function syncHostBrightness() {
     /* the bridge went away; nothing to do about it */
   }
 }
-let hostBrightness = 0.5;
+let hostBrightness = 0.35;
+const OLED_MIN_BRIGHTNESS = 0.08;
+const OLED_MAX_BRIGHTNESS = 0.70;
 
 let readoutAcc = 0;
 function updateReadout(dt) {

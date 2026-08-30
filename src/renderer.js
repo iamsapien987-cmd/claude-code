@@ -46,6 +46,36 @@ const EMISSION_REF = 20000;
  */
 const ROOM_LIGHT_GAIN = 7.5e-4;
 
+/**
+ * How far the flame's glare extends, as a fraction of the smaller screen
+ * dimension. Everything past it is left untouched and so stays exactly black.
+ */
+const GLARE_REACH = 0.62;
+
+/**
+ * Ramp a falloff to nothing well before its own outer edge.
+ *
+ * A gradient that only approaches zero leaves a floor of one or two counts
+ * spread over a huge area, which is invisible on a backlit panel and plainly
+ * visible as a dull glow on an OLED in a dark room - and it keeps those
+ * pixels powered. Bringing the curve to zero at 85% of its radius leaves the
+ * outer band genuinely untouched, while the ramp stays smooth enough not to
+ * show an edge.
+ */
+function taper(s) {
+  if (s <= 0.35) return 1;
+  const t = 1 - (s - 0.35) / 0.5;
+  return t <= 0 ? 0 : Math.pow(t, 2.2);
+}
+
+/**
+ * Anything that would not survive quantisation to 8 bits is snapped to zero,
+ * so it costs no light at all rather than one count across half the screen.
+ */
+function cutoff(a) {
+  return a < 1 / 255 ? 0 : a;
+}
+
 export class Renderer {
   constructor(canvas, field, wax) {
     this.canvas = canvas;
@@ -142,37 +172,39 @@ export class Renderer {
     const lum = this.luminance() * LUMINOUS_INTENSITY;
     if (lum <= 0.001) return;
 
-    const reach = Math.max(w, h) * 1.25;
+    // Light has to *stop*. On an OLED panel a black pixel is switched off, so
+    // any glow that trails away across the whole screen is the display
+    // emitting light on its own account rather than the flame lighting
+    // something. It is also unphysical: there is no wall and no dust in this
+    // scene for a room-filling wash to scatter off. What is real, and what
+    // this draws, is the glare close to a very bright small source - light
+    // scattered by the air just around it and inside the eye looking at it.
+    // Beyond `reach` nothing is drawn at all, so those pixels stay at exactly
+    // zero and the panel keeps them off.
+    const reach = Math.min(w, h) * GLARE_REACH;
     const g = ctx.createRadialGradient(fx, fy, 0, fx, fy, reach);
     const [r, gr, b] = ROOM_RGB;
 
-    // A candle flame is not a point. It is a luminous column some four
-    // centimetres tall, and close in - within a flame height or so - its
-    // illuminance falls off roughly as 1/d rather than 1/d^2. Treating it as
-    // a point put a hard bright disc on the screen with a visible edge where
-    // the inverse square curve fell off a cliff. Using
-    //
-    //     E = I / (d * (d + L))
-    //
-    // recovers 1/d near the flame and the correct 1/d^2 far away, with the
-    // crossover at the flame's own height, which is what a real candle's
-    // pool of light looks like.
     const L = FLAME_HEIGHT;
-    const STOPS = 24;
-    // Gradient position maps to true distance in metres, so the falloff drawn
-    // on screen is the falloff the model describes rather than a curve fitted
-    // to the viewport.
+    const STOPS = 20;
     const span = reach / this.scale;
     for (let i = 0; i <= STOPS; i++) {
       const s = i / STOPS;
       const d = 0.012 + s * span;                      // metres from the flame
+      // Extended source: 1/d close in, 1/d^2 far away, crossing over at the
+      // flame's own height.
       const e = lum / (d * (d + L));
-      const a = Math.min(0.62, e * ROOM_LIGHT_GAIN);
+      // Taper the last part of the curve to nothing so the gradient reaches
+      // true zero at `reach` instead of leaving a floor of one or two counts
+      // spread across the whole panel.
+      const a = i === STOPS ? 0 : cutoff(Math.min(0.62, e * ROOM_LIGHT_GAIN) * taper(s));
       g.addColorStop(s, `rgba(${r}, ${gr}, ${b}, ${a.toFixed(4)})`);
     }
     ctx.globalCompositeOperation = 'lighter';
     ctx.fillStyle = g;
-    ctx.fillRect(0, 0, w, h);
+    ctx.beginPath();
+    ctx.arc(fx, fy, reach, 0, Math.PI * 2);
+    ctx.fill();
     ctx.globalCompositeOperation = 'source-over';
   }
 
@@ -184,18 +216,27 @@ export class Renderer {
     const rPx = CANDLE_RADIUS * this.scale;
 
     // Soft pool of light on the table.
-    const g = ctx.createRadialGradient(this.cx, y, rPx * 0.4, this.cx, y, rPx * 9);
+    const reach = rPx * 9;
+    const g = ctx.createRadialGradient(this.cx, y, rPx * 0.4, this.cx, y, reach);
     const [r, gr, b] = ROOM_RGB;
-    g.addColorStop(0, `rgba(${r}, ${gr}, ${b}, ${(0.30 * lum).toFixed(3)})`);
-    g.addColorStop(0.35, `rgba(${r}, ${gr}, ${b}, ${(0.10 * lum).toFixed(3)})`);
-    g.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    // Same rule as the glare: this is light falling on a real surface, but it
+    // still has to reach true zero rather than trailing off across the panel.
+    for (let i = 0; i <= 10; i++) {
+      const s = i / 10;
+      const falloff = 0.30 / (1 + 9 * s * s);
+      const a = i === 10 ? 0 : cutoff(falloff * lum * taper(s));
+      g.addColorStop(s, `rgba(${r}, ${gr}, ${b}, ${a.toFixed(4)})`);
+    }
     ctx.globalCompositeOperation = 'lighter';
     ctx.save();
     ctx.translate(0, y);
     ctx.scale(1, TILT * 1.6);
     ctx.translate(0, -y);
     ctx.fillStyle = g;
-    ctx.fillRect(0, y - rPx * 9, w, rPx * 18);
+    // Bounded to the lit ellipse; outside it nothing is drawn, so it stays off.
+    ctx.beginPath();
+    ctx.arc(this.cx, y, reach, 0, Math.PI * 2);
+    ctx.fill();
     ctx.restore();
     ctx.globalCompositeOperation = 'source-over';
 

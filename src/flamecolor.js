@@ -58,6 +58,9 @@ export const BLUE_THRESHOLD = 0.42;
  */
 export const EXPOSURE = 2.6;
 
+/** Rows over which emission is faded out at the top of the simulated volume. */
+export const DOMAIN_FADE_ROWS = 14;
+
 /** Reinhard tone map on a 0-255 scale, with exposure applied first. */
 export function toneMap(v) {
   const x = (v / 255) * EXPOSURE;
@@ -141,9 +144,17 @@ export class FlameRasteriser {
       }
       for (let c = 0; c < 3; c++) this.abel.project(radial[c], proj[c]);
 
+      // The simulated volume has to end somewhere. If a tall flame reaches
+      // the top of it the emission would stop dead and draw a flat cut across
+      // the flame, so it is faded out over the last few rows instead. Nothing
+      // physical happens there - it is the edge of the model, and this stops
+      // the edge from being visible.
+      const edge = Math.min(1, (ny - 1 - j) / DOMAIN_FADE_ROWS);
       const row = (ny - 1 - j) * nx * 4;   // grid j=0 is the wick, image y=0 is the top
       for (let r = 0; r < half; r++) {
-        const R = toneMap(proj[0][r]), G = toneMap(proj[1][r]), B = toneMap(proj[2][r]);
+        const R = toneMap(proj[0][r]) * edge,
+              G = toneMap(proj[1][r]) * edge,
+              B = toneMap(proj[2][r]) * edge;
         for (const i of [cx - 1 - r, cx + r]) {
           if (i < 0 || i >= nx) continue;
           const o = row + i * 4;

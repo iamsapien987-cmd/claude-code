@@ -657,6 +657,9 @@ const BLUE_THRESHOLD = 0.42;
  */
 const EXPOSURE = 2.6;
 
+/** Rows over which emission is faded out at the top of the simulated volume. */
+const DOMAIN_FADE_ROWS = 14;
+
 /** Reinhard tone map on a 0-255 scale, with exposure applied first. */
 function toneMap(v) {
   const x = (v / 255) * EXPOSURE;
@@ -740,9 +743,17 @@ class FlameRasteriser {
       }
       for (let c = 0; c < 3; c++) this.abel.project(radial[c], proj[c]);
 
+      // The simulated volume has to end somewhere. If a tall flame reaches
+      // the top of it the emission would stop dead and draw a flat cut across
+      // the flame, so it is faded out over the last few rows instead. Nothing
+      // physical happens there - it is the edge of the model, and this stops
+      // the edge from being visible.
+      const edge = Math.min(1, (ny - 1 - j) / DOMAIN_FADE_ROWS);
       const row = (ny - 1 - j) * nx * 4;   // grid j=0 is the wick, image y=0 is the top
       for (let r = 0; r < half; r++) {
-        const R = toneMap(proj[0][r]), G = toneMap(proj[1][r]), B = toneMap(proj[2][r]);
+        const R = toneMap(proj[0][r]) * edge,
+              G = toneMap(proj[1][r]) * edge,
+              B = toneMap(proj[2][r]) * edge;
         for (const i of [cx - 1 - r, cx + r]) {
           if (i < 0 || i >= nx) continue;
           const o = row + i * 4;
@@ -871,7 +882,7 @@ class FlameField {
     // Tunables with physical meaning.
     this.vorticityEps = 1.15;  // strength of vorticity confinement
     this.fuelBase = 3.2;       // fuel supply with the wick trimmed right down
-    this.fuelRange = 2.2;      // extra supply at the top of the dial's range
+    this.fuelRange = 1.8;      // extra supply at the top of the dial's range
     this.burnRate = 55.0;      // 1/s, reaction rate once fuel and air have met
     this.heatPerFuel = 7600;   // K per unit fuel fraction burnt
     this.sootYield = 220;      // how fast soot approaches its loading, per unit fuel
@@ -1993,6 +2004,36 @@ const EMISSION_REF = 20000;
  */
 const ROOM_LIGHT_GAIN = 7.5e-4;
 
+/**
+ * How far the flame's glare extends, as a fraction of the smaller screen
+ * dimension. Everything past it is left untouched and so stays exactly black.
+ */
+const GLARE_REACH = 0.62;
+
+/**
+ * Ramp a falloff to nothing well before its own outer edge.
+ *
+ * A gradient that only approaches zero leaves a floor of one or two counts
+ * spread over a huge area, which is invisible on a backlit panel and plainly
+ * visible as a dull glow on an OLED in a dark room - and it keeps those
+ * pixels powered. Bringing the curve to zero at 85% of its radius leaves the
+ * outer band genuinely untouched, while the ramp stays smooth enough not to
+ * show an edge.
+ */
+function taper(s) {
+  if (s <= 0.35) return 1;
+  const t = 1 - (s - 0.35) / 0.5;
+  return t <= 0 ? 0 : Math.pow(t, 2.2);
+}
+
+/**
+ * Anything that would not survive quantisation to 8 bits is snapped to zero,
+ * so it costs no light at all rather than one count across half the screen.
+ */
+function cutoff(a) {
+  return a < 1 / 255 ? 0 : a;
+}
+
 class Renderer {
   constructor(canvas, field, wax) {
     this.canvas = canvas;
@@ -2089,37 +2130,39 @@ class Renderer {
     const lum = this.luminance() * LUMINOUS_INTENSITY;
     if (lum <= 0.001) return;
 
-    const reach = Math.max(w, h) * 1.25;
+    // Light has to *stop*. On an OLED panel a black pixel is switched off, so
+    // any glow that trails away across the whole screen is the display
+    // emitting light on its own account rather than the flame lighting
+    // something. It is also unphysical: there is no wall and no dust in this
+    // scene for a room-filling wash to scatter off. What is real, and what
+    // this draws, is the glare close to a very bright small source - light
+    // scattered by the air just around it and inside the eye looking at it.
+    // Beyond `reach` nothing is drawn at all, so those pixels stay at exactly
+    // zero and the panel keeps them off.
+    const reach = Math.min(w, h) * GLARE_REACH;
     const g = ctx.createRadialGradient(fx, fy, 0, fx, fy, reach);
     const [r, gr, b] = ROOM_RGB;
 
-    // A candle flame is not a point. It is a luminous column some four
-    // centimetres tall, and close in - within a flame height or so - its
-    // illuminance falls off roughly as 1/d rather than 1/d^2. Treating it as
-    // a point put a hard bright disc on the screen with a visible edge where
-    // the inverse square curve fell off a cliff. Using
-    //
-    //     E = I / (d * (d + L))
-    //
-    // recovers 1/d near the flame and the correct 1/d^2 far away, with the
-    // crossover at the flame's own height, which is what a real candle's
-    // pool of light looks like.
     const L = FLAME_HEIGHT;
-    const STOPS = 24;
-    // Gradient position maps to true distance in metres, so the falloff drawn
-    // on screen is the falloff the model describes rather than a curve fitted
-    // to the viewport.
+    const STOPS = 20;
     const span = reach / this.scale;
     for (let i = 0; i <= STOPS; i++) {
       const s = i / STOPS;
       const d = 0.012 + s * span;                      // metres from the flame
+      // Extended source: 1/d close in, 1/d^2 far away, crossing over at the
+      // flame's own height.
       const e = lum / (d * (d + L));
-      const a = Math.min(0.62, e * ROOM_LIGHT_GAIN);
+      // Taper the last part of the curve to nothing so the gradient reaches
+      // true zero at `reach` instead of leaving a floor of one or two counts
+      // spread across the whole panel.
+      const a = i === STOPS ? 0 : cutoff(Math.min(0.62, e * ROOM_LIGHT_GAIN) * taper(s));
       g.addColorStop(s, `rgba(${r}, ${gr}, ${b}, ${a.toFixed(4)})`);
     }
     ctx.globalCompositeOperation = 'lighter';
     ctx.fillStyle = g;
-    ctx.fillRect(0, 0, w, h);
+    ctx.beginPath();
+    ctx.arc(fx, fy, reach, 0, Math.PI * 2);
+    ctx.fill();
     ctx.globalCompositeOperation = 'source-over';
   }
 
@@ -2131,18 +2174,27 @@ class Renderer {
     const rPx = CANDLE_RADIUS * this.scale;
 
     // Soft pool of light on the table.
-    const g = ctx.createRadialGradient(this.cx, y, rPx * 0.4, this.cx, y, rPx * 9);
+    const reach = rPx * 9;
+    const g = ctx.createRadialGradient(this.cx, y, rPx * 0.4, this.cx, y, reach);
     const [r, gr, b] = ROOM_RGB;
-    g.addColorStop(0, `rgba(${r}, ${gr}, ${b}, ${(0.30 * lum).toFixed(3)})`);
-    g.addColorStop(0.35, `rgba(${r}, ${gr}, ${b}, ${(0.10 * lum).toFixed(3)})`);
-    g.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    // Same rule as the glare: this is light falling on a real surface, but it
+    // still has to reach true zero rather than trailing off across the panel.
+    for (let i = 0; i <= 10; i++) {
+      const s = i / 10;
+      const falloff = 0.30 / (1 + 9 * s * s);
+      const a = i === 10 ? 0 : cutoff(falloff * lum * taper(s));
+      g.addColorStop(s, `rgba(${r}, ${gr}, ${b}, ${a.toFixed(4)})`);
+    }
     ctx.globalCompositeOperation = 'lighter';
     ctx.save();
     ctx.translate(0, y);
     ctx.scale(1, TILT * 1.6);
     ctx.translate(0, -y);
     ctx.fillStyle = g;
-    ctx.fillRect(0, y - rPx * 9, w, rPx * 18);
+    // Bounded to the lit ellipse; outside it nothing is drawn, so it stays off.
+    ctx.beginPath();
+    ctx.arc(this.cx, y, reach, 0, Math.PI * 2);
+    ctx.fill();
     ctx.restore();
     ctx.globalCompositeOperation = 'source-over';
 
@@ -2860,8 +2912,16 @@ function effectiveIntensity() {
 function syncHostBrightness() {
   const host = window.CandleHost;
   if (!host || typeof host.setBrightness !== 'function') return;
+  // Deliberately not driving the panel anywhere near full.
+  //
+  // A candle is about one candela: at arm's length that is a few lux, which
+  // is very dim indeed, while a phone at full brightness is hundreds of nits.
+  // On an OLED, brightness scales every lit pixel at once, so running the
+  // backlight high would make a dark room glow orange and give the whole
+  // illusion away - quite apart from the battery. This range reads as a
+  // candle in the dark and still has headroom in a lit room.
   const target = state.lit
-    ? Math.max(0.10, Math.min(1, renderer.luminance() * 0.92))
+    ? OLED_MIN_BRIGHTNESS + renderer.luminance() * (OLED_MAX_BRIGHTNESS - OLED_MIN_BRIGHTNESS)
     : 0.03;
   // Ease towards it: matching the flicker frame for frame would make the
   // backlight buzz, because the panel responds far more slowly than the
@@ -2873,7 +2933,9 @@ function syncHostBrightness() {
     /* the bridge went away; nothing to do about it */
   }
 }
-let hostBrightness = 0.5;
+let hostBrightness = 0.35;
+const OLED_MIN_BRIGHTNESS = 0.08;
+const OLED_MAX_BRIGHTNESS = 0.70;
 
 let readoutAcc = 0;
 function updateReadout(dt) {
