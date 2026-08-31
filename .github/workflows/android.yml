@@ -36,6 +36,8 @@ jobs:
           I=1.0 node tools/oled.mjs
       - name: Check taps land where they should
         run: node tools/tap-check.mjs
+      - name: Check the crackle follows the flame, and does not leak
+        run: node tools/audio-check.mjs
       - uses: actions/upload-artifact@v4
         with:
           name: candle-html

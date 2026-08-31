@@ -15,11 +15,51 @@
  * Synthesising it also keeps the app tiny: no audio assets to ship.
  */
 
+// Number.isFinite rather than a NaN check: undefined and null are not NaN and
+// would slide straight through comparisons, arriving as NaN in the arithmetic
+// a line later. A test caught exactly that.
+const clamp01 = (x) => (Number.isFinite(x) ? (x < 0 ? 0 : x > 1 ? 1 : x) : 0);
+
+/**
+ * How the flame drives the crackle.
+ *
+ * Pure on purpose: numbers in, numbers out, no Web Audio anywhere near it. The
+ * part with judgement in it can then be tested under `node --test` with no
+ * browser, which is the split that finally made the microphone work - measure
+ * in one place, decide in another, test the decision.
+ *
+ * The scaling is measured rather than guessed. Sampled at 60 fps with the room
+ * draft running, `renderer.luminance()` averages 0.449 / 0.886 / 1.406 across
+ * the dial's low, middle and top, so dividing by 1.45 lands within a few
+ * hundredths of the dial position the crackle used to be handed. That is the
+ * point: at rest this should sound exactly as it did, and only the response to
+ * a moving flame is new.
+ *
+ * @param {number} vigour   0..1, light output normalised — how big the flame is
+ * @param {number} flutter  0..1, how fast that output is changing right now
+ * @param {number} blow     0..1, breath detected at the microphone
+ * @param {boolean} lit
+ */
+export function crackleDrive({ vigour, flutter, blow, lit }) {
+  if (!lit) return { rate: 0, gain: 0, strength: 0 };
+  const v = clamp01(vigour);
+  // A disturbed flame spits. A gutter or a puff should multiply the tick rate,
+  // not nudge it - the whole complaint was that the candle could gutter in
+  // silence. Flutter is divided by 0.6 upstream, which is its measured 95th
+  // percentile, so this reaches 1 only on the deepest gutters.
+  const excite = clamp01(clamp01(flutter) * 0.7 + clamp01(blow));
+  return {
+    rate: 1.4 + v * 5.5 + excite * 9,
+    gain: 0.10 + v * 0.55 + excite * 0.12,
+    strength: 0.4 + v + excite * 0.8,
+  };
+}
+
 export class Crackle {
   constructor() {
     this.ctx = null;
     this.on = false;
-    this.level = 0;
+    this.drive = { rate: 0, gain: 0, strength: 0 };
   }
 
   start() {
@@ -72,23 +112,32 @@ export class Crackle {
   schedule() {
     if (!this.ctx || !this.on) return;
     const ctx = this.ctx;
-    const horizon = 0.6;
+    // Short horizon on purpose. Ticks already scheduled cannot be taken back,
+    // so it sets how long the crackle takes to notice the flame moving. At the
+    // old 0.6 s a gutter would have been heard well after it was seen.
+    const horizon = 0.35;
     let t = Math.max(ctx.currentTime, this.nextAt || ctx.currentTime);
-    const rate = 1.4 + this.level * 5.5;      // ticks per second
+    const { rate, strength } = this.drive;
     while (t < ctx.currentTime + horizon) {
+      if (rate <= 0) { t = ctx.currentTime + horizon; break; }
       t += -Math.log(1 - Math.random()) / rate;
-      if (t > ctx.currentTime) this.pop(t, 0.4 + this.level);
+      if (t > ctx.currentTime) this.pop(t, strength);
     }
     this.nextAt = t;
-    this.timer = setTimeout(() => this.schedule(), 400);
+    this.timer = setTimeout(() => this.schedule(), 200);
   }
 
-  /** Track the flame: louder and busier as the dial goes up. */
-  setLevel(level, lit) {
-    this.level = level;
+  /**
+   * Track the flame itself, rather than the dial.
+   *
+   * This used to be handed `state.intensity` - the knob - so the candle could
+   * flicker, gutter and recover without the sound changing at all. It now
+   * takes what the simulation is actually doing.
+   */
+  setFlame(vigour, flutter, blow, lit) {
+    this.drive = crackleDrive({ vigour, flutter, blow, lit });
     if (!this.ctx) return;
-    const target = lit ? 0.10 + level * 0.55 : 0;
-    this.master.gain.setTargetAtTime(target, this.ctx.currentTime, 0.25);
+    this.master.gain.setTargetAtTime(this.drive.gain, this.ctx.currentTime, 0.25);
   }
 
   resume() { if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume(); }

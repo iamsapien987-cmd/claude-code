@@ -147,7 +147,7 @@ function extinguish(reason) {
   buzz([14, 40, 22]);
   // The screen is about to go black on purpose, so say how to get back in.
   if (reason) showToast(`${reason}\nDouble-tap to wake the screen`);
-  crackle.setLevel(0, false);
+  crackle.setFlame(0, 0, 0, false);
   syncRelight();
 }
 
@@ -157,7 +157,7 @@ function light() {
   dial.classList.remove('out');
   air.extinguishFor = 0;
   buzz(12);
-  crackle.setLevel(state.intensity, true);
+  syncCrackle(0);
   syncRelight();
 }
 
@@ -221,6 +221,30 @@ relightBtn.addEventListener('click', () => {
   toggleFlame();
   wake();
 });
+
+/**
+ * Hand the crackle what the flame is actually doing.
+ *
+ * `renderer.luminance()` is already smoothed once per frame, so it carries the
+ * real flicker without strobing. Its rate of change is the interesting part -
+ * that is a gutter - but frame to frame it is spiky (the median at full dial
+ * is zero), so it is smoothed over about a fifth of a second before use.
+ *
+ * The 1.45 and 0.6 are measurements, not taste: the luminance ceiling, and the
+ * 95th percentile of the flutter, both sampled with the draft running.
+ */
+let flutter = 0;
+let lastLum = 0;
+function syncCrackle(dt) {
+  const lum = renderer.luminance();
+  if (dt > 0) {
+    const d = Math.abs(lum - lastLum) / dt;
+    flutter += (d - flutter) * Math.min(1, dt / 0.2);
+  }
+  lastLum = lum;
+  if (!state.sound) return;
+  crackle.setFlame(lum / 1.45, flutter / 0.6, air.blow, state.lit && !wax.spent);
+}
 
 /** Replace a burnt-out candle with a new one. */
 function freshCandle() {
@@ -420,7 +444,7 @@ btn.read.addEventListener('click', () => {
 btn.sound.addEventListener('click', () => {
   state.sound = !state.sound;
   press(btn.sound, state.sound);
-  if (state.sound) { crackle.start(); crackle.setLevel(state.intensity, state.lit); }
+  if (state.sound) { crackle.start(); syncCrackle(0); }
   else crackle.stop();
 });
 
@@ -563,7 +587,7 @@ function frame(now) {
     extinguish(null);
     showToast('The candle has burned out.\nTap the ring for a fresh one.');
   }
-  if (state.sound) crackle.setLevel(state.intensity, state.lit && !wax.spent);
+  syncCrackle(dt);
 
   renderer.draw(state);
   updateReadout(dt);

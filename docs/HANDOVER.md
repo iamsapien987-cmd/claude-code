@@ -10,6 +10,27 @@ those are measured dead ends, not guesses, and re-running them costs hours.
 
 ---
 
+## 0. What it is *for* — read this before deciding what "better" means
+
+Settled with the user on 2026-08-30, and it changes the priorities:
+
+**This is an ambient companion for students and ASMR listeners** — something
+alive on the corner of a desk that makes a long solitary session feel less
+mechanical. It is not a candle novelty. The user's words: a companion and not a
+distraction, beautiful and realistic and alive, something that lifts a mundane
+schedule.
+
+Consequences, because they are not obvious:
+
+- **Sound is half the product, not a garnish.** For the ASMR half of the
+  audience it is most of the product.
+- **Nothing may demand attention.** No notifications, no streaks, no
+  gamification. The app already honours this; keep it that way.
+- **Sessions are long.** An hour or more, screen on, propped up. Battery,
+  CPU and anything that accumulates over time matter more than they would in an
+  app used for ninety seconds.
+- A wider flame is not automatically better; a flame that feels *alive* is.
+
 ## 1. What this is
 
 An Android app: a candle on your phone that behaves like a real one. The
@@ -109,11 +130,12 @@ parameter was found.
 | `src/abel.js` | Forward Abel projection |
 | `src/flamecolor.js` | Simulation state → emitted colour |
 | `src/renderer.js` | Everything that reaches the screen |
-| `src/audio.js` | Synthesised wick crackle (Poisson events, not a loop) |
+| `src/audio.js` | Synthesised wick crackle (Poisson events, not a loop), and `crackleDrive`, the pure flame→sound mapping |
 | `src/app.js` | Loop, dial, modes, lock |
 | `android/` | Thin WebView shell — one Kotlin Activity |
 | `.github/workflows/android.yml` | Builds the APK; see [§6](#6-environment-constraints) |
 | `tools/shape.mjs` | **Width**, where the flame is widest, its taper, soot mass, ceiling clearance — at three dial settings |
+| `tools/audio-check.mjs` | The crackle in a real browser: does it follow the flame, and does the audio graph leak |
 
 ### The physics that matters
 
@@ -319,6 +341,56 @@ which request shape was last tried.
 **Untested on the device as of writing.** If it fails again, `audio inputs: 0`
 would point upstream of this app entirely — MIUI's privacy layer is the
 suspect — while a success on `plain` confirms the constraint theory.
+
+### 2026-08-30 — the app got a purpose, and the sound got wired to the flame
+
+**The positioning changed, and it came from the user.** Not a candle app: an
+ambient companion for students and ASMR listeners. That is recorded in the new
+§0 because it changes what "better" means — a wider flame is not automatically
+an improvement, a flame that feels alive is, and sound stops being a garnish.
+
+My own commercial read was worse than theirs and it is worth saying so. I had
+judged it as "candle app", a novelty category with no willingness to pay. As an
+ambient companion it sits next to Forest and the study-with-me and lofi
+audiences, where people demonstrably do pay. Their framing was better than
+mine.
+
+**The crackle was driven by the dial.** `setLevel(state.intensity, lit)` — the
+knob, not the flame. The simulation computed emission, reaction rate and
+flicker every frame and none of it reached the speaker, so the candle could
+gutter, recover, or be blown at in complete silence. It looked alive and
+sounded like a metronome.
+
+It now takes `renderer.luminance()` and the smoothed rate of change of it, plus
+`air.blow`. Two constants, both measured rather than chosen: luminance is
+divided by 1.45 (its ceiling) and flutter by 0.6 (its 95th percentile, sampled
+with the draft running). The first matters more than it looks — normalised
+luminance is 0.31/0.61/0.97 across the dial where the old code passed
+0.25/0.70/1.00, so **the existing tuning carried over untouched and the resting
+sound is unchanged.** Only the response is new. A test pins that, so a later
+change cannot quietly make it louder.
+
+The mapping is a pure function, `crackleDrive`, for the same reason the
+microphone works: measure in one place, decide in another, test the decision.
+Six unit tests, no browser needed. One of them caught a real hole immediately —
+`Number.isNaN(undefined)` is false, so `undefined` slid through the clamp and
+arrived as NaN a line later.
+
+The scheduling horizon dropped from 0.6 s to 0.35 s. Ticks already scheduled
+cannot be recalled, so that horizon *is* the latency between seeing a gutter
+and hearing it.
+
+`tools/audio-check.mjs` is new and runs in CI. It measures the tick rate from
+real node creations in a browser — 3.4/s at a low dial against 6.3/s at a high
+one, close to the 3.1 and 6.7 predicted offline — confirms a snuffed candle
+falls silent, and **counts live audio nodes**, because every tick builds a small
+graph and a leak would only surface after an hour on a desk. Currently 2 live
+of 239 created.
+
+Next, in order: rain, then wind driven from the same Ornstein-Uhlenbeck process
+that already leans the flame, then a stream and night insects, then a mixer.
+Birdsong is excluded — it cannot be synthesised convincingly this way and comes
+out sounding like a theremin.
 
 ### 2026-08-30 — flame shape: six more dead ends, one modest gain
 

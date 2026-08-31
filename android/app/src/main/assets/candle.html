@@ -2226,11 +2226,51 @@ function micDiagnostics(air) {
  * Synthesising it also keeps the app tiny: no audio assets to ship.
  */
 
+// Number.isFinite rather than a NaN check: undefined and null are not NaN and
+// would slide straight through comparisons, arriving as NaN in the arithmetic
+// a line later. A test caught exactly that.
+const clamp01 = (x) => (Number.isFinite(x) ? (x < 0 ? 0 : x > 1 ? 1 : x) : 0);
+
+/**
+ * How the flame drives the crackle.
+ *
+ * Pure on purpose: numbers in, numbers out, no Web Audio anywhere near it. The
+ * part with judgement in it can then be tested under `node --test` with no
+ * browser, which is the split that finally made the microphone work - measure
+ * in one place, decide in another, test the decision.
+ *
+ * The scaling is measured rather than guessed. Sampled at 60 fps with the room
+ * draft running, `renderer.luminance()` averages 0.449 / 0.886 / 1.406 across
+ * the dial's low, middle and top, so dividing by 1.45 lands within a few
+ * hundredths of the dial position the crackle used to be handed. That is the
+ * point: at rest this should sound exactly as it did, and only the response to
+ * a moving flame is new.
+ *
+ * @param {number} vigour   0..1, light output normalised — how big the flame is
+ * @param {number} flutter  0..1, how fast that output is changing right now
+ * @param {number} blow     0..1, breath detected at the microphone
+ * @param {boolean} lit
+ */
+function crackleDrive({ vigour, flutter, blow, lit }) {
+  if (!lit) return { rate: 0, gain: 0, strength: 0 };
+  const v = clamp01(vigour);
+  // A disturbed flame spits. A gutter or a puff should multiply the tick rate,
+  // not nudge it - the whole complaint was that the candle could gutter in
+  // silence. Flutter is divided by 0.6 upstream, which is its measured 95th
+  // percentile, so this reaches 1 only on the deepest gutters.
+  const excite = clamp01(clamp01(flutter) * 0.7 + clamp01(blow));
+  return {
+    rate: 1.4 + v * 5.5 + excite * 9,
+    gain: 0.10 + v * 0.55 + excite * 0.12,
+    strength: 0.4 + v + excite * 0.8,
+  };
+}
+
 class Crackle {
   constructor() {
     this.ctx = null;
     this.on = false;
-    this.level = 0;
+    this.drive = { rate: 0, gain: 0, strength: 0 };
   }
 
   start() {
@@ -2283,23 +2323,32 @@ class Crackle {
   schedule() {
     if (!this.ctx || !this.on) return;
     const ctx = this.ctx;
-    const horizon = 0.6;
+    // Short horizon on purpose. Ticks already scheduled cannot be taken back,
+    // so it sets how long the crackle takes to notice the flame moving. At the
+    // old 0.6 s a gutter would have been heard well after it was seen.
+    const horizon = 0.35;
     let t = Math.max(ctx.currentTime, this.nextAt || ctx.currentTime);
-    const rate = 1.4 + this.level * 5.5;      // ticks per second
+    const { rate, strength } = this.drive;
     while (t < ctx.currentTime + horizon) {
+      if (rate <= 0) { t = ctx.currentTime + horizon; break; }
       t += -Math.log(1 - Math.random()) / rate;
-      if (t > ctx.currentTime) this.pop(t, 0.4 + this.level);
+      if (t > ctx.currentTime) this.pop(t, strength);
     }
     this.nextAt = t;
-    this.timer = setTimeout(() => this.schedule(), 400);
+    this.timer = setTimeout(() => this.schedule(), 200);
   }
 
-  /** Track the flame: louder and busier as the dial goes up. */
-  setLevel(level, lit) {
-    this.level = level;
+  /**
+   * Track the flame itself, rather than the dial.
+   *
+   * This used to be handed `state.intensity` - the knob - so the candle could
+   * flicker, gutter and recover without the sound changing at all. It now
+   * takes what the simulation is actually doing.
+   */
+  setFlame(vigour, flutter, blow, lit) {
+    this.drive = crackleDrive({ vigour, flutter, blow, lit });
     if (!this.ctx) return;
-    const target = lit ? 0.10 + level * 0.55 : 0;
-    this.master.gain.setTargetAtTime(target, this.ctx.currentTime, 0.25);
+    this.master.gain.setTargetAtTime(this.drive.gain, this.ctx.currentTime, 0.25);
   }
 
   resume() { if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume(); }
@@ -3120,7 +3169,7 @@ function extinguish(reason) {
   buzz([14, 40, 22]);
   // The screen is about to go black on purpose, so say how to get back in.
   if (reason) showToast(`${reason}\nDouble-tap to wake the screen`);
-  crackle.setLevel(0, false);
+  crackle.setFlame(0, 0, 0, false);
   syncRelight();
 }
 
@@ -3130,7 +3179,7 @@ function light() {
   dial.classList.remove('out');
   air.extinguishFor = 0;
   buzz(12);
-  crackle.setLevel(state.intensity, true);
+  syncCrackle(0);
   syncRelight();
 }
 
@@ -3194,6 +3243,30 @@ relightBtn.addEventListener('click', () => {
   toggleFlame();
   wake();
 });
+
+/**
+ * Hand the crackle what the flame is actually doing.
+ *
+ * `renderer.luminance()` is already smoothed once per frame, so it carries the
+ * real flicker without strobing. Its rate of change is the interesting part -
+ * that is a gutter - but frame to frame it is spiky (the median at full dial
+ * is zero), so it is smoothed over about a fifth of a second before use.
+ *
+ * The 1.45 and 0.6 are measurements, not taste: the luminance ceiling, and the
+ * 95th percentile of the flutter, both sampled with the draft running.
+ */
+let flutter = 0;
+let lastLum = 0;
+function syncCrackle(dt) {
+  const lum = renderer.luminance();
+  if (dt > 0) {
+    const d = Math.abs(lum - lastLum) / dt;
+    flutter += (d - flutter) * Math.min(1, dt / 0.2);
+  }
+  lastLum = lum;
+  if (!state.sound) return;
+  crackle.setFlame(lum / 1.45, flutter / 0.6, air.blow, state.lit && !wax.spent);
+}
 
 /** Replace a burnt-out candle with a new one. */
 function freshCandle() {
@@ -3393,7 +3466,7 @@ btn.read.addEventListener('click', () => {
 btn.sound.addEventListener('click', () => {
   state.sound = !state.sound;
   press(btn.sound, state.sound);
-  if (state.sound) { crackle.start(); crackle.setLevel(state.intensity, state.lit); }
+  if (state.sound) { crackle.start(); syncCrackle(0); }
   else crackle.stop();
 });
 
@@ -3536,7 +3609,7 @@ function frame(now) {
     extinguish(null);
     showToast('The candle has burned out.\nTap the ring for a fresh one.');
   }
-  if (state.sound) crackle.setLevel(state.intensity, state.lit && !wax.spent);
+  syncCrackle(dt);
 
   renderer.draw(state);
   updateReadout(dt);
