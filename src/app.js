@@ -12,6 +12,7 @@ import { WaxBody } from './wax.js';
 import { AirModel, micDiagnostics } from './air.js';
 import { Renderer } from './renderer.js';
 import { Crackle } from './audio.js';
+import { Rain } from './rain.js';
 import { CANDLE_HEIGHT_0, LUMINOUS_INTENSITY } from './constants.js';
 
 // ---------------------------------------------------------------- simulation
@@ -25,6 +26,7 @@ const field = new FlameField(GRID_NX, GRID_NY, DOMAIN_W / GRID_NX);
 const wax = new WaxBody();
 const air = new AirModel();
 const crackle = new Crackle();
+const rain = new Rain();
 
 const state = {
   intensity: 0.7,      // the dial, 0..1
@@ -35,6 +37,8 @@ const state = {
   mode: null,          // null | 'focus' | 'reading'
   zen: false,
   sound: false,
+  rain: false,          // rain on the roof, independent of the wick crackle
+  rainLevel: 1,         // index into RAIN_STEPS
   focusLeft: 0,        // ms remaining in the session
   focusPaused: false,
 };
@@ -56,6 +60,7 @@ const btn = {
   focus: document.getElementById('btnFocus'),
   read: document.getElementById('btnRead'),
   sound: document.getElementById('btnSound'),
+  rain: document.getElementById('btnRain'),
   zen: document.getElementById('btnZen'),
   lock: document.getElementById('btnLock'),
 };
@@ -441,6 +446,51 @@ btn.read.addEventListener('click', () => {
   }
 });
 
+/**
+ * Rain. Tap for on and off; hold to step drizzle -> steady -> downpour.
+ *
+ * Deliberately not tied to the wick crackle: someone may want the room and not
+ * the candle, or the other way round. A proper mixer comes later; holding a
+ * button is enough to be useful now and reuses the gesture the microphone's
+ * diagnostics already established.
+ */
+const RAIN_STEPS = [
+  { level: 0.15, name: 'Drizzle' },
+  { level: 0.50, name: 'Steady rain' },
+  { level: 0.90, name: 'Downpour' },
+];
+let rainHoldTimer = 0;
+let rainHeld = false;
+
+btn.rain.addEventListener('pointerdown', () => {
+  rainHeld = false;
+  clearTimeout(rainHoldTimer);
+  rainHoldTimer = setTimeout(() => {
+    rainHeld = true;
+    buzz(18);
+    state.rainLevel = (state.rainLevel + 1) % RAIN_STEPS.length;
+    const step = RAIN_STEPS[state.rainLevel];
+    rain.setStrength(step.level);
+    if (!state.rain) { state.rain = true; press(btn.rain, true); rain.start(); }
+    showToast(step.name);
+  }, 600);
+});
+['pointerup', 'pointercancel', 'pointerleave'].forEach((ev) =>
+  btn.rain.addEventListener(ev, () => clearTimeout(rainHoldTimer)));
+
+btn.rain.addEventListener('click', () => {
+  if (rainHeld) { rainHeld = false; return; }
+  state.rain = !state.rain;
+  press(btn.rain, state.rain);
+  if (state.rain) {
+    rain.setStrength(RAIN_STEPS[state.rainLevel].level);
+    rain.start();
+    showToast(`${RAIN_STEPS[state.rainLevel].name}\nHold for heavier`);
+  } else {
+    rain.stop();
+  }
+});
+
 btn.sound.addEventListener('click', () => {
   state.sound = !state.sound;
   press(btn.sound, state.sound);
@@ -715,4 +765,4 @@ wake();
 requestAnimationFrame(frame);
 
 // Exposed for the headless render check in tools/shoot.mjs.
-window.__candle = { field, wax, air, state, renderer, setIntensity, extinguish, light };
+window.__candle = { field, wax, air, state, renderer, crackle, rain, setIntensity, extinguish, light };

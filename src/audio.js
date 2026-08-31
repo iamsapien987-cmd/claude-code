@@ -18,7 +18,62 @@
 // Number.isFinite rather than a NaN check: undefined and null are not NaN and
 // would slide straight through comparisons, arriving as NaN in the arithmetic
 // a line later. A test caught exactly that.
-const clamp01 = (x) => (Number.isFinite(x) ? (x < 0 ? 0 : x > 1 ? 1 : x) : 0);
+/**
+ * One AudioContext for the whole app, shared by every sound layer.
+ *
+ * Not per-layer: a context carries its own audio thread, browsers cap how many
+ * a page may hold, and this app is meant to sit on a desk for hours. Layers
+ * register by name in a Set rather than by counting, so a double start or a
+ * stop-then-start cannot leave the books wrong - which a refcount would.
+ *
+ * The context is suspended rather than closed when the last layer stops, so
+ * toggling sound off and on again does not churn a new one each time.
+ */
+let sharedCtx = null;
+const activeLayers = new Set();
+
+export function audioContext() {
+  if (sharedCtx) return sharedCtx;
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) return null;
+  sharedCtx = new Ctx();
+  return sharedCtx;
+}
+
+export function layerOn(name) {
+  const ctx = audioContext();
+  if (!ctx) return null;
+  activeLayers.add(name);
+  if (ctx.state === 'suspended') ctx.resume();
+  return ctx;
+}
+
+export function layerOff(name) {
+  activeLayers.delete(name);
+  if (sharedCtx && activeLayers.size === 0 && sharedCtx.state === 'running') {
+    sharedCtx.suspend();
+  }
+}
+
+/**
+ * Two seconds of white noise, built once and shared.
+ *
+ * Every layer here is noise through a filter - the crackle's ticks, rain's
+ * bed and its drops - so they can all read from the same buffer instead of
+ * each allocating a few hundred kilobytes of their own.
+ */
+let noise = null;
+export function noiseBuffer(ctx) {
+  if (noise && noise.sampleRate === ctx.sampleRate) return noise;
+  const n = ctx.sampleRate * 2;
+  const buf = ctx.createBuffer(1, n, ctx.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+  noise = buf;
+  return noise;
+}
+
+export const clamp01 = (x) => (Number.isFinite(x) ? (x < 0 ? 0 : x > 1 ? 1 : x) : 0);
 
 /**
  * How the flame drives the crackle.
@@ -63,23 +118,18 @@ export class Crackle {
   }
 
   start() {
-    if (this.ctx) { this.resume(); return; }
-    const Ctx = window.AudioContext || window.webkitAudioContext;
-    if (!Ctx) return;
-    const ctx = new Ctx();
+    const ctx = layerOn('crackle');
+    if (!ctx) return;
     this.ctx = ctx;
-
-    this.master = ctx.createGain();
-    this.master.gain.value = 0;
-    this.master.connect(ctx.destination);
-
-    // Two seconds of white noise, which every tick is carved out of.
-    const n = ctx.sampleRate * 2;
-    const buf = ctx.createBuffer(1, n, ctx.sampleRate);
-    const d = buf.getChannelData(0);
-    for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
-    this.noise = buf;
-
+    // Built once and kept. Stopping silences and unschedules; it does not tear
+    // the graph down, so switching sound off and on again is instant.
+    if (!this.master) {
+      this.master = ctx.createGain();
+      this.master.gain.value = 0;
+      this.master.connect(ctx.destination);
+    }
+    this.noise = noiseBuffer(ctx);
+    if (this.on) return;
     this.on = true;
     this.schedule();
   }
@@ -143,14 +193,12 @@ export class Crackle {
   resume() { if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume(); }
 
   stop() {
-    if (!this.ctx) return;
+    if (!this.ctx || !this.on) return;
     this.on = false;
     clearTimeout(this.timer);
+    this.timer = 0;
     this.master.gain.setTargetAtTime(0, this.ctx.currentTime, 0.2);
-    setTimeout(() => {
-      if (this.on) return;
-      this.ctx.close();
-      this.ctx = null;
-    }, 700);
+    // Let the fade finish before releasing, or the tail is cut off.
+    setTimeout(() => { if (!this.on) layerOff('crackle'); }, 700);
   }
 }

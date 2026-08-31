@@ -41,7 +41,10 @@ const check = (name, pass, detail = '') => {
 };
 const created = () => page.evaluate(() => window.__nodes.created);
 const live = () => page.evaluate(() => window.__nodes.created - window.__nodes.ended);
-const wake = async () => { await page.touchscreen.tap(200, 300); await page.waitForTimeout(300); };
+// Well away from the flame. Tapping the flame snuffs it, and the flame is not
+// where it was: widening the vaporisation footprint made it taller and wider,
+// and a wake tap that used to miss it started putting the candle out.
+const wake = async () => { await page.touchscreen.tap(40, 120); await page.waitForTimeout(300); };
 
 /** Ticks per second over a window, measured from real node creations. */
 async function tickRate(seconds) {
@@ -92,6 +95,58 @@ check('the audio graph does not leak', stillLive < 25,
 await wake();
 await page.click('#btnSound');
 await page.waitForTimeout(2000);
+
+// 5. Rain. Nobody can hear this in CI, so it is measured two ways: how many
+//    drops actually land, and what the sound is made of.
+await wake();
+await page.click('#btnRain');
+await page.waitForTimeout(2500);
+await page.evaluate(() => window.__candle.rain.setStrength(0.15));
+await page.waitForTimeout(1500);
+const drizzle = await tickRate(6);
+await page.evaluate(() => window.__candle.rain.setStrength(0.9));
+await page.waitForTimeout(1500);
+const downpour = await tickRate(6);
+check('rain falls', drizzle > 3, `${drizzle.toFixed(1)}/s`);
+check('a downpour is heavier than drizzle', downpour > drizzle * 1.8,
+  `${drizzle.toFixed(1)}/s -> ${downpour.toFixed(1)}/s`);
+check('...and stays inside the budget that was measured', downpour < 70,
+  `${downpour.toFixed(1)}/s against 160/s measured as free`);
+
+// What it is made of. Rain is broadband with the top rolled off - not a tone,
+// not white noise. An analyser on the layer's own output says which.
+const band = await page.evaluate(async () => {
+  const r = window.__candle.rain;
+  const an = r.ctx.createAnalyser();
+  an.fftSize = 2048;
+  r.master.connect(an);
+  await new Promise((res) => setTimeout(res, 1500));
+  const bins = new Float32Array(an.frequencyBinCount);
+  an.getFloatFrequencyData(bins);
+  r.master.disconnect(an);
+  const nyq = r.ctx.sampleRate / 2;
+  const avg = (lo, hi) => {
+    let sum = 0, n = 0;
+    for (let i = 1; i < bins.length; i++) {
+      const f = (i * nyq) / bins.length;
+      if (f >= lo && f < hi && bins[i] > -140) { sum += 10 ** (bins[i] / 20); n++; }
+    }
+    return n ? sum / n : 0;
+  };
+  return { low: avg(150, 700), mid: avg(700, 3000), high: avg(3000, 8000), top: avg(13000, 20000) };
+});
+check('rain is broadband, not a tone',
+  band.low > 0 && band.mid > 0 && band.high > 0,
+  `low ${band.low.toExponential(1)} mid ${band.mid.toExponential(1)} high ${band.high.toExponential(1)}`);
+check('...with the top rolled off, not white noise', band.top < band.mid * 0.5,
+  `top ${band.top.toExponential(1)} vs mid ${band.mid.toExponential(1)}`);
+
+await wake();
+await page.click('#btnRain');
+await page.waitForTimeout(2500);
+const afterRain = await tickRate(4);
+check('switching rain off stops it', afterRain < 0.5, `${afterRain.toFixed(2)}/s`);
+
 check('no page errors', errors.length === 0, errors.slice(0, 3).join(' | '));
 
 await browser.close();

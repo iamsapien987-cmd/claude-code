@@ -130,7 +130,8 @@ parameter was found.
 | `src/abel.js` | Forward Abel projection |
 | `src/flamecolor.js` | Simulation state → emitted colour |
 | `src/renderer.js` | Everything that reaches the screen |
-| `src/audio.js` | Synthesised wick crackle (Poisson events, not a loop), and `crackleDrive`, the pure flame→sound mapping |
+| `src/audio.js` | The shared `AudioContext` and noise buffer, the wick crackle (Poisson events, not a loop), and `crackleDrive` |
+| `src/rain.js` | Synthesised rain on a roof: hiss, roof body, discrete taps, and `rainDrive` |
 | `src/app.js` | Loop, dial, modes, lock |
 | `android/` | Thin WebView shell — one Kotlin Activity |
 | `.github/workflows/android.yml` | Builds the APK; see [§6](#6-environment-constraints) |
@@ -341,6 +342,58 @@ which request shape was last tried.
 **Untested on the device as of writing.** If it fails again, `audio inputs: 0`
 would point upstream of this app entirely — MIUI's privacy layer is the
 suspect — while a success on `plain` confirms the constraint theory.
+
+### 2026-08-30 — rain, and a shared audio context
+
+Second stage of the sound work. Rain on a roof, synthesised like everything
+else: no files, nothing to license, nothing added to the download, and no loop
+for the ear to find over a two-hour session.
+
+Three layers, because that is what the sound is: a hiss of drops too small to
+resolve, the roof itself drumming in a narrow band around 420 Hz, and the drops
+big enough to hear landing one at a time as a Poisson process. Heavier rain is
+not just louder — the hiss gains top end, the roof drums harder and the taps
+arrive faster until they blur. One control moves all of it, with a slow wander
+so it swells and eases.
+
+**The performance risk was measured before anything was built**, which the plan
+required: 160 drop-chains a second held 59.9 fps beside the fluid solver with
+live node counts bounded. A node per drop is fine, so no AudioWorklet. The
+ceiling shipped is 50/s, and a test pins it there.
+
+**Every layer now shares one `AudioContext`.** A context carries its own audio
+thread and browsers cap how many a page may hold, and this app is meant to sit
+on a desk for hours. Layers register by *name in a Set* rather than by
+counting — a refcount gets it wrong the moment a stop and a start overlap,
+which they do during the fade. The context suspends rather than closes when the
+last layer stops.
+
+Three things this session found that are worth carrying:
+
+- **The bundler's module list is hand-maintained and fails silently.** A file
+  missing from `MODULES` in `tools/build.mjs` is simply absent from the bundle,
+  and the first symptom is a `ReferenceError` in a browser naming a class
+  nobody can find. It now fails the build instead, by comparing the list
+  against `src/*.js`.
+- **A test's wake tap started snuffing the candle.** `audio-check` tapped at
+  (200, 300) to wake the interface; widening the vaporisation footprint earlier
+  the same day made the flame wide enough to be *at* that point. A reminder
+  that geometry changes reach the tests, and incidentally hard evidence the
+  flame really did get bigger.
+- **Nobody can hear CI.** So rain is checked two ways: how many drops actually
+  land, measured from real node creations, and an analyser on the layer's own
+  output confirming the sound is broadband with the top rolled off — 13–20 kHz
+  sits about fifty times below the mid band. That distinguishes rain from white
+  noise and from a tone without anyone listening.
+
+**Untested on the device, and worth checking first:** whether the audio actually
+stops when you leave the app. The shell calls `WebView.onPause`, which makes no
+firm promise about media, and this project has now been bitten three times by
+Android signals that read correctly and did nothing. Rain still playing after
+you switch apps would be the worst possible bug for a background companion.
+
+Next: wind, driven from the same Ornstein-Uhlenbeck process in `air.js` that
+already leans the flame, so the gust heard and the lean seen are one event.
 
 ### 2026-08-30 — the app got a purpose, and the sound got wired to the flame
 

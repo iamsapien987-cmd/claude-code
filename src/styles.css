@@ -68,7 +68,11 @@ html, body {
 #readout.on { opacity: 1; }
 
 /* ------------------------------------------------------------- the toolbar */
-#toolbar { display: flex; gap: 14px; }
+/* Seven 44px buttons at a fixed 14px gap overflow a 390px phone, and the
+   buttons themselves must not shrink - 44px is the smallest a finger reliably
+   hits. So the gap gives way instead: 2vw lands at ~7px on a 360px screen,
+   which fits with room to spare, and opens back up on a larger one. */
+#toolbar { display: flex; gap: clamp(5px, 2vw, 14px); }
 
 .tool {
   width: 44px;

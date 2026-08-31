@@ -64,3 +64,38 @@ test('nonsense inputs cannot produce nonsense output', () => {
     }
   }
 });
+
+// ------------------------------------------------------------------- rain
+
+import { rainDrive } from '../src/rain.js';
+
+test('heavier rain moves every layer together, not just the volume', () => {
+  const drizzle = rainDrive(0.1), downpour = rainDrive(1);
+  assert.ok(downpour.dropRate > drizzle.dropRate * 2, 'more drops land');
+  assert.ok(downpour.bedGain > drizzle.bedGain, 'the hiss builds');
+  assert.ok(downpour.bodyGain > drizzle.bodyGain, 'the roof drums harder');
+  assert.ok(downpour.bedCutoff > drizzle.bedCutoff * 1.5,
+    'and gains top end rather than only getting louder');
+});
+
+test('rain stays inside the budget that was measured as free', () => {
+  // 160 drop-chains a second cost nothing measurable next to the solver, on a
+  // desktop. This keeps a wide margin, because the target is a phone.
+  assert.ok(rainDrive(1).dropRate < 60, `${rainDrive(1).dropRate}/s is too many`);
+  assert.ok(rainDrive(0).dropRate > 2, 'drizzle should still be audible');
+});
+
+test('rain never gets loud enough to drown the candle', () => {
+  // The candle is the point; the room is behind it.
+  const loud = rainDrive(1);
+  assert.ok(loud.bedGain + loud.bodyGain < 0.3,
+    `${(loud.bedGain + loud.bodyGain).toFixed(3)} is too much next to a 0.65 crackle`);
+});
+
+test('rain clamps like everything else', () => {
+  for (const bad of [NaN, undefined, -3, 99]) {
+    for (const [k, v] of Object.entries(rainDrive(bad))) {
+      assert.ok(Number.isFinite(v) && v >= 0, `${k} = ${v} for input ${bad}`);
+    }
+  }
+});

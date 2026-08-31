@@ -24,9 +24,21 @@ const MODULES = [
   'wax.js',
   'air.js',
   'audio.js',
+  'rain.js',
   'renderer.js',
   'app.js',
 ];
+
+// A module missing from that list does not fail here - it simply is not in the
+// bundle, and the first sign is a ReferenceError in the browser naming a class
+// nobody can find. Cheaper to catch it now.
+const onDisk = fs.readdirSync(path.join(ROOT, 'src')).filter((f) => f.endsWith('.js'));
+const missing = onDisk.filter((f) => !MODULES.includes(f));
+if (missing.length) {
+  console.error(`src/${missing.join(', src/')} is not in MODULES, so it will not be bundled.`);
+  console.error('Add it in dependency order - after everything it imports.');
+  process.exit(1);
+}
 
 /** Strip ES module syntax, leaving plain top-level declarations. */
 function flatten(source, name) {
