@@ -343,6 +343,40 @@ which request shape was last tried.
 would point upstream of this app entirely — MIUI's privacy layer is the
 suspect — while a success on `plain` confirms the constraint theory.
 
+### 2026-08-30 — the controls became a ring around the dial
+
+The row of seven buttons read as dense, which matters in an app whose job is to
+be calm. The user chose an arc around the dial over a vertical column, after
+seeing all of them rendered on the real build rather than described — mocking
+layouts up headlessly and looking took minutes and settled it far better than
+argument would have.
+
+The arc spans the upper half only, 185° to 355°, so nothing lands below the
+dial where the hint sits. One button ends up over the wax at the top; the glass
+is translucent and it is well clear of the flame, and an even seven reads
+better than a lopsided four-and-three with a gap. The radius clears the dial's
+72 px touch target with room to spare, which matters because the dial has
+already been rebuilt once for being hard to use.
+
+Two things worth knowing before touching this:
+
+- **`.tool:active` cannot set `transform`.** The radial placement *is* a
+  transform, and a second one replaces it rather than adding to it, so the
+  press state would fling the button to the centre of the dial. The press
+  scale rides on a custom property inside the same transform instead.
+- **The dial and the buttons now share `#console`**, a positioned box, because
+  placing one thing on an arc around another requires both to agree where the
+  centre is.
+
+Geometry is checked at 320, 390 and 430 px: nothing offscreen, nothing shrunk
+below the 44 px a finger reliably hits, nothing over the hint, nothing crowding
+the dial.
+
+**The ring is full at seven.** Wind, stream and night insects cannot each take
+a button. When they arrive they need the mixer from the plan — one sound
+control opening a panel — which would take the ring back to five or six. That
+is now a dependency of stage 4, not an optional tidy-up.
+
 ### 2026-08-30 — rain, and a shared audio context
 
 Second stage of the sound work. Rain on a roof, synthesised like everything

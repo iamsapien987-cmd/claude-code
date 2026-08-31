@@ -77,13 +77,54 @@ html, body {
 #readout.on { opacity: 1; }
 
 /* ------------------------------------------------------------- the toolbar */
-/* Seven 44px buttons at a fixed 14px gap overflow a 390px phone, and the
-   buttons themselves must not shrink - 44px is the smallest a finger reliably
-   hits. So the gap gives way instead: 2vw lands at ~7px on a 360px screen,
-   which fits with room to spare, and opens back up on a larger one. */
-#toolbar { display: flex; gap: clamp(5px, 2vw, 14px); }
+/* ------------------------------------------------- the ring of controls
+ *
+ * The buttons sit on an arc around the dial rather than in a row beneath it.
+ * A row of seven was dense enough to read as clutter, and this is an app whose
+ * whole job is to be calm.
+ *
+ * The arc spans the upper half only, 185deg to 355deg, so nothing lands below
+ * the dial where the hint text is. One button ends up over the wax at the top,
+ * which is fine - the glass is translucent and it is well clear of the flame.
+ *
+ * The radius clears the dial's 72px touch target with room to spare. It gives
+ * way on a narrow screen so the outer buttons cannot run off the edge; 38vw
+ * keeps a 320px phone inside its own bounds.
+ */
+#console {
+  position: relative;
+  width: 100%;
+  height: 218px;              /* dial half-height + radius + button half */
+}
+
+#console #dial {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  margin-left: -46px;
+}
+
+/* A zero-sized origin sitting exactly on the dial's centre. Every button is
+   placed by rotating out from here. */
+#toolbar {
+  position: absolute;
+  left: 50%;
+  bottom: 46px;
+  width: 0;
+  height: 0;
+  --wreath-r: min(150px, 38vw);
+}
 
 .tool {
+  position: absolute;
+  left: 0;
+  top: 0;
+  margin: -22px 0 0 -22px;    /* centre the button on the origin */
+  /* Out along the arc, then spun back so the icon stays upright. The press
+     scale rides on a variable rather than its own transform - a second
+     transform would replace this one and fling the button to the centre. */
+  transform: rotate(var(--a)) translate(var(--wreath-r))
+             rotate(calc(-1 * var(--a))) scale(var(--press, 1));
   width: 44px;
   height: 44px;
   padding: 0;
@@ -104,7 +145,16 @@ html, body {
   fill: none; stroke: currentColor;
   stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round;
 }
-.tool:active { transform: scale(0.93); }
+.tool:active { --press: 0.93; }
+
+/* Evenly spaced across the arc, in the order they appear in the markup. */
+#btnMic   { --a: 185deg; }
+#btnFocus { --a: 213.3deg; }
+#btnRead  { --a: 241.7deg; }
+#btnSound { --a: 270deg; }
+#btnRain  { --a: 298.3deg; }
+#btnZen   { --a: 326.7deg; }
+#btnLock  { --a: 355deg; }
 .tool[aria-pressed="true"] {
   background: rgba(255, 133, 0, 0.17);
   border-color: rgba(255, 133, 0, 0.45);
@@ -339,7 +389,11 @@ body.reading #hint { opacity: 0; }
   <div id="ui">
     <div id="readout" aria-live="polite"></div>
 
-    <div id="toolbar" role="toolbar" aria-label="Modes">
+    <!-- The dial and the ring of controls around it are one object, so they
+         share a positioned box: the buttons are placed on an arc centred on
+         the dial, and that only works if both know where the centre is. -->
+    <div id="console">
+      <div id="toolbar" role="toolbar" aria-label="Modes">
       <button class="tool" id="btnMic"   aria-pressed="false" title="Blow out with the microphone" aria-label="Microphone blow-out">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3z"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
       </button>
@@ -361,14 +415,15 @@ body.reading #hint { opacity: 0; }
       <button class="tool" id="btnLock"  aria-pressed="false" title="Lock the screen" aria-label="Lock screen">
         <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="10.5" width="16" height="10" rx="2.5"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>
       </button>
-    </div>
+      </div>
 
-    <div id="dial" role="slider" tabindex="0" aria-label="Flame intensity"
-         aria-valuemin="0" aria-valuemax="100" aria-valuenow="70">
-      <div id="dialTrack"></div>
-      <div id="dialGlow"></div>
-      <div id="dialKnob"></div>
-      <div id="dialFlame"></div>
+      <div id="dial" role="slider" tabindex="0" aria-label="Flame intensity"
+           aria-valuemin="0" aria-valuemax="100" aria-valuenow="70">
+        <div id="dialTrack"></div>
+        <div id="dialGlow"></div>
+        <div id="dialKnob"></div>
+        <div id="dialFlame"></div>
+      </div>
     </div>
     <div id="hint">Slide the dial up or down &middot; tap the flame to snuff it</div>
 
