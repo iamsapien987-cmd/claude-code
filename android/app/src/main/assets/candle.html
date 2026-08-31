@@ -912,7 +912,24 @@ class FlameRasteriser {
  * molten wax feeding it is a few millimetres across, which on this grid is
  * about five cells.
  */
-const WICK_CELLS = 5.0;
+/**
+ * Radius, in cells, of the region where wax vapour is fed in.
+ *
+ * Not a wick: a real wick is about a millimetre across and this is several.
+ * It is the vaporisation footprint, and it stands in for a fuel-rich zone the
+ * solver cannot produce on its own - oxygen is never fully consumed anywhere
+ * in the domain, so the flame is not behaving as a true diffusion flame and
+ * the rich core has to be supplied rather than emerging. See docs/HANDOVER.md
+ * section 5; that is the real remaining deficiency and this only widens the
+ * symptom.
+ *
+ * Raised from 5.0. The injected profile falls off as (1 - d^2/r^2), so the
+ * part actually hot enough to burn is roughly half the nominal radius - the
+ * flame measured narrower than its own source. Widening it and cutting the
+ * fuel density to match keeps the heat release, and the peak temperature,
+ * where they were.
+ */
+const WICK_CELLS = 9.0;
 
 /**
  * Ceiling on the prescribed divergence, 1/s. The projection is solved with a
@@ -1000,8 +1017,10 @@ class FlameField {
 
     // Tunables with physical meaning.
     this.vorticityEps = 1.15;  // strength of vorticity confinement
-    this.fuelBase = 3.2;       // fuel supply with the wick trimmed right down
-    this.fuelRange = 1.8;      // extra supply at the top of the dial's range
+    // Halved against the wider footprint above, so the total fuel fed in -
+    // and therefore the flame temperature - is what it was before.
+    this.fuelBase = 1.6;       // fuel supply with the wick trimmed right down
+    this.fuelRange = 0.9;      // extra supply at the top of the dial's range
     this.burnRate = 55.0;      // 1/s, reaction rate once fuel and air have met
     this.heatPerFuel = 7600;   // K per unit fuel fraction burnt
     this.sootYield = 220;      // how fast soot approaches its loading, per unit fuel

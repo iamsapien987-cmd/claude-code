@@ -113,6 +113,7 @@ parameter was found.
 | `src/app.js` | Loop, dial, modes, lock |
 | `android/` | Thin WebView shell — one Kotlin Activity |
 | `.github/workflows/android.yml` | Builds the APK; see [§6](#6-environment-constraints) |
+| `tools/shape.mjs` | **Width**, where the flame is widest, its taper, soot mass, ceiling clearance — at three dial settings |
 
 ### The physics that matters
 
@@ -149,7 +150,8 @@ parameter was found.
 
 ## 5. What has already been tried and failed
 
-**Read this before touching flame width.** Nine approaches, all measured.
+**Read this before touching flame width.** Nine approaches before 2026-08-30,
+six more measured that day. All measured, none guessed.
 
 | Approach | Result |
 |---|---|
@@ -160,6 +162,12 @@ parameter was found.
 | **Burke–Schumann flamelet rewrite** | Did not close into a tip; burned as a column filling the domain. Stand-off measured **0.4–0.6×** against the predicted 4×. Reverted. Re-tested later with a realistic wick — same result. Genuinely closed. |
 | Eddy diffusivity 1.5e-4 (derived from real candle geometry) | Width numbers improved to 7 mm, **but the render got worse** — flame clipped the domain ceiling with a hard flat cut. Reverted. |
 | Raising Abel `refRadius` to widen the flame | **Wrong idea.** It is a brightness normalisation only; it cannot widen anything. |
+| **Enlarging the domain** (height 78→156 mm, width 24→48 mm) | **No effect whatsoever.** Hot-zone width is 3.0 mm in every configuration. This kills the lead this section used to recommend. |
+| Eddy thermal diffusivity + a taller domain | Clips the ceiling at *every* height (77/78, 119/120, 155/156 mm). Its width comes from heating the whole column — the profile is a flat 11.4/11.4/10.8/10.2/9.6, a cylinder, not a flame. |
+| Fast chemistry alone (`burnRate` 480, so `burnRate·dt` = 1) | Hot width 3.0→4.2 mm and the widest point moves off the base — then **soot is exactly zero**, and neither `sootYield` nor `sootOxidation` moves it off zero. Mechanism below. |
+| Fast chemistry + rich core (`fuelBase` 12) + rescaled `heatPerFuel` | Produces a genuine oxygen-free core (`minOx` 0.0000, 105 cells) and hot width to 6.6 mm — but the *sooty* zone collapses to 0.6–2.4 mm at the base and soot mass falls 2–5×. The visible flame gets narrower, which is backwards. |
+| Fast chemistry + rich core + raised **mass** diffusivity (5e-5, 1e-4) | Worse again. Spreading the fuel destroys the rich core that was the point, and temperature pins to the adiabatic clamp at 2219 K. |
+| `expansionGain` 6–9 with the wider footprint | Reaches the target — 6.6–9.0 mm, widest point finally off the base at 13–16% of height — and then **fills the domain vertically** (h = 76.8 mm in a 78 mm box) and loses its tip. The eddy failure mode again, and the same mistake: a width metric improved while the picture got worse. |
 
 ### What did work
 
@@ -172,11 +180,39 @@ parameter was found.
 
 ### Best current understanding of the remaining gap
 
-Hot zone measures 1.2–3.6 mm against a real candle's 7–10 mm. A real
-axisymmetric diffusion flame stands off at ~√(1/Z_st) ≈ 4× the wick radius;
-this achieves ~1×. **The domain ceiling is probably the thing to fix first** —
-every width improvement so far has been defeated by the flame hitting the top
-of the simulated volume.
+**Corrected 2026-08-30.** This section used to say the domain ceiling was
+probably the thing to fix first. That was measured and it is wrong: enlarging
+the domain in either direction changes the width by nothing at all. Anyone
+following that advice would waste a session, which is why it is called out
+rather than quietly edited.
+
+The real deficiency is structural, and it is one number:
+
+> **Oxygen is never consumed anywhere in the domain.** `minOx` is 0.634 with
+> the shipped parameters, and not one cell holds fuel without oxygen.
+
+So there is no fuel-rich core, and this is **not behaving as a diffusion flame
+at all** — it is a slow burn spread through the whole fuel plume, which is why
+it is shaped like a plume from a source rather than an envelope. That explains
+every result above at once: width knobs either do nothing, or they produce a
+hot column that has to be clipped by the ceiling.
+
+A second, smaller finding: the injection profile falls off as `(1 - d²/r²)`, so
+only the middle of the footprint is hot enough to burn. **The flame measured
+narrower than its own source** — 3.0 mm from a 6.4 mm source.
+
+What actually shipped is the small, safe half of that second finding: the
+footprint widened (`WICK_CELLS` 5→9) with fuel density halved to hold the heat
+release constant. Soot width 3.6→4.8 mm at mid dial, flame height 52.8→58.2 mm,
+peak temperature unchanged at 1459 K against 1461 K, and it still tapers to a
+tip. Modest and honest; it does not make a teardrop.
+
+**If someone attacks this again**, the target is the rich core: make the solver
+deplete oxygen near the wick so a stoichiometric surface can form, without the
+fuel load that sends the temperature to the adiabatic clamp. Every attempt so
+far has had to choose between the two. Nothing above suggests a width knob is
+the answer — six were tried in one day and the two that reached the target
+width did it by filling the box.
 
 ---
 
@@ -283,6 +319,51 @@ which request shape was last tried.
 **Untested on the device as of writing.** If it fails again, `audio inputs: 0`
 would point upstream of this app entirely — MIUI's privacy layer is the
 suspect — while a success on `plain` confirms the constraint theory.
+
+### 2026-08-30 — flame shape: six more dead ends, one modest gain
+
+The last substantial item, and the one deferred to last throughout. Measuring
+before changing anything killed the lead this document itself recommended.
+
+**The domain ceiling is not the constraint.** §5 said it was probably the thing
+to fix first. Hot-zone width is 3.0 mm whether the box is 78 mm or 156 mm tall,
+24 mm or 48 mm wide. That advice would have cost the next session a day, so it
+is corrected in place rather than quietly dropped.
+
+**The structural finding, and it is one number: `minOx` never falls below
+0.634.** Oxygen is not consumed anywhere; no cell holds fuel without oxygen.
+There is no fuel-rich core, so the thing is not behaving as a diffusion flame —
+it is a slow burn through the whole fuel plume. That single fact explains every
+previous failure at once. A width knob cannot fix a missing flame structure,
+which is why six of them failed in one day.
+
+**A rich core can be forced, and costs more than it gives.** Raising the fuel
+load produces a real oxygen-free core and 6.6 mm of hot zone, but the *sooty*
+region — the part you can actually see — collapses to the base and loses most
+of its mass. Widening it further with mass diffusivity destroys the core it
+depends on.
+
+**Two routes reach the target width, both by ruining the picture.**
+`expansionGain` 9 gives 6.6–9.0 mm with the widest point finally off the base —
+and a flame 76.8 mm tall in a 78 mm box, with no tip. Eddy diffusivity did the
+same thing. The handover already records me optimising a width metric and
+degrading the render; doing it again in the same session is the reason the
+rendered image is now a required check and not a courtesy.
+
+**What shipped is small and honest.** The injection profile falls off as
+(1 - d²/r²), so only the middle of the footprint burns — the flame measured
+narrower than its own source, 3.0 mm from 6.4 mm. Widening the footprint
+(`WICK_CELLS` 5→9) with the fuel density halved to hold the heat release
+constant gives soot width 3.6→4.8 mm at mid dial and height 52.8→58.2 mm, at an
+unchanged 1459 K, still tapering to a tip. Better, not solved.
+
+`tools/shape.mjs` is new and is the reason this session went differently.
+Nothing in the project measured flame *width* — `sweep.mjs` reports height,
+flicker and temperature — so nine previous attempts were judged without the
+number they were trying to move.
+
+**The teardrop was not achieved and is not close.** The next person should go
+after the rich core, not the width.
 
 ### 2026-08-30 — one failure per install, and zen that never went dark
 

@@ -33,10 +33,15 @@ I=1.0 node tools/oled.mjs       # fails if the panel lights where it must not
 
 ## Do not retry these
 
-Flame width has nine measured dead ends recorded in `docs/HANDOVER.md` §5,
-including the full Burke–Schumann flamelet rewrite and temperature-dependent
-thermal diffusivity, which made it actively worse. Read that section before
-attempting it. The user has deferred flame shape to last.
+Flame width has fifteen measured dead ends recorded in `docs/HANDOVER.md` §5,
+including the full Burke–Schumann flamelet rewrite, temperature-dependent
+thermal diffusivity, and enlarging the domain — which §5 used to recommend and
+which measurably does nothing. Read that section before attempting it.
+
+`node tools/shape.mjs` is the tool for judging any attempt: it reports width,
+where the flame is widest and how it tapers. Two attempts have now reached the
+target width by turning the flame into a column that fills the domain, so
+**always look at a rendered image before believing a width number**.
 
 ## Environment
 
